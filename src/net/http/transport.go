@@ -279,6 +279,7 @@ func (t *Transport) CloseIdleConnections() {
 func (t *Transport) CancelRequest(req *Request) {
 	t.reqMu.Lock()
 	cancel := t.reqCanceler[req]
+	delete(t.reqCanceler, req)
 	t.reqMu.Unlock()
 	if cancel != nil {
 		cancel()
@@ -474,6 +475,25 @@ func (t *Transport) setReqCanceler(r *Request, fn func()) {
 	}
 }
 
+// replaceReqCanceler replaces an existing cancel function. If there is no cancel function
+// for the request, we don't set the function and return false.
+// Since CancelRequest will clear the canceler, we can use the return value to detect if
+// the request was canceled since the last setReqCancel call.
+func (t *Transport) replaceReqCanceler(r *Request, fn func()) bool {
+	t.reqMu.Lock()
+	defer t.reqMu.Unlock()
+	_, ok := t.reqCanceler[r]
+	if !ok {
+		return false
+	}
+	if fn != nil {
+		t.reqCanceler[r] = fn
+	} else {
+		delete(t.reqCanceler, r)
+	}
+	return true
+}
+
 func (t *Transport) dial(network, addr string) (c net.Conn, err error) {
 	if t.Dial != nil {
 		return t.Dial(network, addr)
@@ -490,6 +510,10 @@ var prePendingDial, postPendingDial func()
 // is ready to write requests to.
 func (t *Transport) getConn(req *Request, cm connectMethod) (*persistConn, error) {
 	if pc := t.getIdleConn(cm); pc != nil {
+		// set request canceler to some non-nil function so we
+		// can detect whether it was cleared between now and when
+		// we enter roundTrip
+		t.setReqCanceler(req, func() {})
 		return pc, nil
 	}
 
@@ -805,6 +829,7 @@ type persistConn struct {
 	numExpectedResponses int
 	closed               bool // whether conn has been closed
 	broken               bool // an error has happened on this connection; marked broken so it's not reused.
+	canceled             bool // whether this conn was broken due a CancelRequest
 	// mutateHeaderFunc is an optional func to modify extra
 	// headers on each outbound request before it's written. (the
 	// original Request given to RoundTrip is not modified)
@@ -819,8 +844,18 @@ func (pc *persistConn) isBroken() bool {
 	return b
 }
 
+// isCanceled reports whether this connection was closed due to CancelRequest.
+func (pc *persistConn) isCanceled() bool {
+	pc.lk.Lock()
+	defer pc.lk.Unlock()
+	return pc.canceled
+}
+
 func (pc *persistConn) cancelRequest() {
-	pc.conn.Close()
+	pc.lk.Lock()
+	defer pc.lk.Unlock()
+	pc.canceled = true
+	pc.closeLocked()
 }
 
 var remoteSideClosedFunc func(error) bool // or nil to use default
@@ -836,8 +871,18 @@ func remoteSideClosed(err error) bool {
 }
 
 func (pc *persistConn) readLoop() {
-	alive := true
+	// eofc is used to block http.Handler goroutines reading from Response.Body
+	// at EOF until this goroutines has (potentially) added the connection
+	// back to the idle pool.
+	eofc := make(chan struct{})
+	defer close(eofc) // unblock reader on errors
 
+	// Read this once, before loop starts. (to avoid races in tests)
+	testHookMu.Lock()
+	testHookReadLoopBeforeNextRead := testHookReadLoopBeforeNextRead
+	testHookMu.Unlock()
+
+	alive := true
 	for alive {
 		pb, err := pc.br.Peek(1)
 
@@ -895,24 +940,28 @@ func (pc *persistConn) readLoop() {
 			alive = false
 		}
 
-		var waitForBodyRead chan bool
+		var waitForBodyRead chan bool // channel is nil when there's no body
 		if hasBody {
 			waitForBodyRead = make(chan bool, 2)
 			resp.Body.(*bodyEOFSignal).earlyCloseFn = func() error {
-				// Sending false here sets alive to
-				// false and closes the connection
-				// below.
 				waitForBodyRead <- false
 				return nil
 			}
-			resp.Body.(*bodyEOFSignal).fn = func(err error) {
-				waitForBodyRead <- alive &&
-					err == nil &&
-					!pc.sawEOF &&
-					pc.wroteRequest() &&
-					pc.t.putIdleConn(pc)
+			resp.Body.(*bodyEOFSignal).fn = func(err error) error {
+				isEOF := err == io.EOF
+				waitForBodyRead <- isEOF
+				if isEOF {
+					<-eofc // see comment at top
+				} else if err != nil && pc.isCanceled() {
+					return errRequestCanceled
+				}
+				return err
 			}
 		}
+
+		pc.lk.Lock()
+		pc.numExpectedResponses--
+		pc.lk.Unlock()
 
 		// The connection might be going away when we put the
 		// idleConn below. When that happens, we close the response channel to signal
@@ -924,28 +973,37 @@ func (pc *persistConn) readLoop() {
 		// on the response channel before erroring out.
 		rc.ch <- responseAndError{resp, err}
 
-		if alive && !hasBody {
-			alive = !pc.sawEOF &&
+		if hasBody {
+			// To avoid a race, wait for the just-returned
+			// response body to be fully consumed before peek on
+			// the underlying bufio reader.
+			select {
+			case bodyEOF := <-waitForBodyRead:
+				pc.t.setReqCanceler(rc.req, nil) // before pc might return to idle pool
+				alive = alive &&
+					bodyEOF &&
+					!pc.sawEOF &&
+					pc.wroteRequest() &&
+					pc.t.putIdleConn(pc)
+				if bodyEOF {
+					eofc <- struct{}{}
+				}
+			case <-pc.closech:
+				alive = false
+			}
+		} else {
+			pc.t.setReqCanceler(rc.req, nil) // before pc might return to idle pool
+			alive = alive &&
+				!pc.sawEOF &&
 				pc.wroteRequest() &&
 				pc.t.putIdleConn(pc)
 		}
 
-		// Wait for the just-returned response body to be fully consumed
-		// before we race and peek on the underlying bufio reader.
-		if waitForBodyRead != nil {
-			select {
-			case alive = <-waitForBodyRead:
-			case <-pc.closech:
-				alive = false
-			}
-		}
-
-		pc.t.setReqCanceler(rc.req, nil)
-
-		if !alive {
-			pc.close()
+		if hook := testHookReadLoopBeforeNextRead; hook != nil {
+			hook()
 		}
 	}
+	pc.close()
 }
 
 func (pc *persistConn) writeLoop() {
@@ -1035,11 +1093,24 @@ func (e *httpError) Temporary() bool { return true }
 
 var errTimeout error = &httpError{err: "net/http: timeout awaiting response headers", timeout: true}
 var errClosed error = &httpError{err: "net/http: transport closed before response was received"}
+var errRequestCanceled = errors.New("net/http: request canceled")
 
-var testHookPersistConnClosedGotRes func() // nil except for tests
+// nil except for tests
+var (
+	testHookPersistConnClosedGotRes func()
+	testHookEnterRoundTrip          func()
+	testHookMu                      sync.Locker = fakeLocker{} // guards following
+	testHookReadLoopBeforeNextRead  func()
+)
 
 func (pc *persistConn) roundTrip(req *transportRequest) (resp *Response, err error) {
-	pc.t.setReqCanceler(req.Request, pc.cancelRequest)
+	if hook := testHookEnterRoundTrip; hook != nil {
+		hook()
+	}
+	if !pc.t.replaceReqCanceler(req.Request, pc.cancelRequest) {
+		pc.t.putIdleConn(pc)
+		return nil, errRequestCanceled
+	}
 	pc.lk.Lock()
 	pc.numExpectedResponses++
 	headerFn := pc.mutateHeaderFunc
@@ -1132,10 +1203,6 @@ WaitResponse:
 		}
 	}
 
-	pc.lk.Lock()
-	pc.numExpectedResponses--
-	pc.lk.Unlock()
-
 	if re.err != nil {
 		pc.t.setReqCanceler(req.Request, nil)
 	}
@@ -1183,16 +1250,18 @@ func canonicalAddr(url *url.URL) string {
 
 // bodyEOFSignal wraps a ReadCloser but runs fn (if non-nil) at most
 // once, right before its final (error-producing) Read or Close call
-// returns. If earlyCloseFn is non-nil and Close is called before
-// io.EOF is seen, earlyCloseFn is called instead of fn, and its
-// return value is the return value from Close.
+// returns. fn should return the new error to return from Read or Close.
+//
+// If earlyCloseFn is non-nil and Close is called before io.EOF is
+// seen, earlyCloseFn is called instead of fn, and its return value is
+// the return value from Close.
 type bodyEOFSignal struct {
 	body         io.ReadCloser
-	mu           sync.Mutex   // guards following 4 fields
-	closed       bool         // whether Close has been called
-	rerr         error        // sticky Read error
-	fn           func(error)  // error will be nil on Read io.EOF
-	earlyCloseFn func() error // optional alt Close func used if io.EOF not seen
+	mu           sync.Mutex        // guards following 4 fields
+	closed       bool              // whether Close has been called
+	rerr         error             // sticky Read error
+	fn           func(error) error // err will be nil on Read io.EOF
+	earlyCloseFn func() error      // optional alt Close func used if io.EOF not seen
 }
 
 func (es *bodyEOFSignal) Read(p []byte) (n int, err error) {
@@ -1213,7 +1282,7 @@ func (es *bodyEOFSignal) Read(p []byte) (n int, err error) {
 		if es.rerr == nil {
 			es.rerr = err
 		}
-		es.condfn(err)
+		err = es.condfn(err)
 	}
 	return
 }
@@ -1229,20 +1298,17 @@ func (es *bodyEOFSignal) Close() error {
 		return es.earlyCloseFn()
 	}
 	err := es.body.Close()
-	es.condfn(err)
-	return err
+	return es.condfn(err)
 }
 
 // caller must hold es.mu.
-func (es *bodyEOFSignal) condfn(err error) {
+func (es *bodyEOFSignal) condfn(err error) error {
 	if es.fn == nil {
-		return
+		return err
 	}
-	if err == io.EOF {
-		err = nil
-	}
-	es.fn(err)
+	err = es.fn(err)
 	es.fn = nil
+	return err
 }
 
 // gzipReader wraps a response body so it can lazily
@@ -1289,3 +1355,11 @@ func (nr noteEOFReader) Read(p []byte) (n int, err error) {
 	}
 	return
 }
+
+// fakeLocker is a sync.Locker which does nothing. It's used to guard
+// test-only fields when not under test, to avoid runtime atomic
+// overhead.
+type fakeLocker struct{}
+
+func (fakeLocker) Lock()   {}
+func (fakeLocker) Unlock() {}

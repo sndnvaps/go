@@ -8,9 +8,8 @@ import (
 	"bytes"
 	"fmt"
 	"go/ast"
+	exact "go/constants" // Renamed to reduce diffs from x/tools.  TODO: remove
 	"go/token"
-
-	"go/exact"
 )
 
 // TODO(gri) Document factory, accessor methods, and fields. General clean-up.

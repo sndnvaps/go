@@ -273,6 +273,7 @@ const (
 	A_ARCHSPECIFIC
 )
 
+// An LSym is the sort of symbol that is written to an object file.
 type LSym struct {
 	Name      string
 	Type      int16
@@ -283,18 +284,25 @@ type LSym struct {
 	Leaf      uint8
 	Seenglobl uint8
 	Onlist    uint8
-	Args      int32
-	Locals    int32
-	Value     int64
-	Size      int64
-	Next      *LSym
-	Gotype    *LSym
-	Autom     *Auto
-	Text      *Prog
-	Etext     *Prog
-	Pcln      *Pcln
-	P         []byte
-	R         []Reloc
+	// Local means make the symbol local even when compiling Go code to reference Go
+	// symbols in other shared libraries, as in this mode symbols are global by
+	// default. "local" here means in the sense of the dynamic linker, i.e. not
+	// visible outside of the module (shared library or executable) that contains its
+	// definition. (When not compiling to support Go shared libraries, all symbols are
+	// local in this sense unless there is a cgo_export_* directive).
+	Local  bool
+	Args   int32
+	Locals int32
+	Value  int64
+	Size   int64
+	Next   *LSym
+	Gotype *LSym
+	Autom  *Auto
+	Text   *Prog
+	Etext  *Prog
+	Pcln   *Pcln
+	P      []byte
+	R      []Reloc
 }
 
 type Pcln struct {
@@ -356,9 +364,7 @@ type Reloc struct {
 	Siz  uint8
 	Type int32
 	Add  int64
-	Xadd int64
 	Sym  *LSym
-	Xsym *LSym
 }
 
 // Reloc.type
@@ -374,8 +380,23 @@ const (
 	R_CALLPOWER
 	R_CONST
 	R_PCREL
+	// R_TLS (only used on arm currently, and not on android and darwin where tlsg is
+	// a regular variable) resolves to data needed to access the thread-local g. It is
+	// interpreted differently depending on toolchain flags to implement either the
+	// "local exec" or "inital exec" model for tls access.
+	// TODO(mwhudson): change to use R_TLS_LE or R_TLS_IE as appropriate, not having
+	// R_TLS do double duty.
 	R_TLS
+	// R_TLS_LE (only used on 386 and amd64 currently) resolves to the offset of the
+	// thread-local g from the thread local base and is used to implement the "local
+	// exec" model for tls access (r.Sym is not set by the compiler for this case but
+	// is set to Tlsg in the linker when externally linking).
 	R_TLS_LE
+	// R_TLS_IE (only used on 386 and amd64 currently) resolves to the PC-relative
+	// offset to a GOT slot containing the offset the thread-local g from the thread
+	// local base and is used to implemented the "initial exec" model for tls access
+	// (r.Sym is not set by the compiler for this case but is set to Tlsg in the
+	// linker when externally linking).
 	R_TLS_IE
 	R_GOTOFF
 	R_PLT0
@@ -439,7 +460,6 @@ type Link struct {
 	Bso                *Biobuf
 	Pathname           string
 	Windows            int32
-	Trimpath           string
 	Goroot             string
 	Goroot_final       string
 	Enforce_data_order int32
@@ -452,7 +472,6 @@ type Link struct {
 	Sym_divu           *LSym
 	Sym_mod            *LSym
 	Sym_modu           *LSym
-	Symmorestack       [2]*LSym
 	Tlsg               *LSym
 	Plan9privates      *LSym
 	Curp               *Prog
@@ -481,7 +500,7 @@ type Link struct {
 
 type SymVer struct {
 	Name    string
-	Version int
+	Version int // TODO: make int16 to match LSym.Version?
 }
 
 // LinkArch is the definition of a single architecture.
@@ -527,13 +546,11 @@ type Plist struct {
  */
 func Linknewplist(ctxt *Link) *Plist {
 	pl := new(Plist)
-	*pl = Plist{}
 	if ctxt.Plist == nil {
 		ctxt.Plist = pl
 	} else {
 		ctxt.Plast.Link = pl
 	}
 	ctxt.Plast = pl
-
 	return pl
 }

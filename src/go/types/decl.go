@@ -6,9 +6,8 @@ package types
 
 import (
 	"go/ast"
+	exact "go/constants" // Renamed to reduce diffs from x/tools.  TODO: remove
 	"go/token"
-
-	"go/exact"
 )
 
 func (check *Checker) reportAltDecl(obj Object) {

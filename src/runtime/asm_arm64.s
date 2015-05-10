@@ -35,8 +35,11 @@ TEXT runtime·rt0_go(SB),NOSPLIT,$0
 
 	MRS_TPIDR_R0			// load TLS base pointer
 	MOVD	R0, R3			// arg 3: TLS base pointer
-	//MOVD	$runtime·tlsg(SB), R2 	// arg 2: tlsg
+#ifdef TLSG_IS_VARIABLE
+	MOVD	$runtime·tls_g(SB), R2 	// arg 2: tlsg
+#else
 	MOVD	$0x10, R2		// arg 2: tlsg TODO(minux): hardcoded for linux
+#endif
 	MOVD	$setg_gcc<>(SB), R1	// arg 1: setg
 	MOVD	g, R0			// arg 0: G
 	BL	(R12)
@@ -466,6 +469,20 @@ TEXT runtime·atomicloaduint(SB), NOSPLIT, $-8-16
 TEXT runtime·atomicstoreuintptr(SB), NOSPLIT, $0-16
 	B	runtime·atomicstore64(SB)
 
+// AES hashing not implemented for ARM64, issue #10109.
+TEXT runtime·aeshash(SB),NOSPLIT,$-8-0
+	MOVW	$0, R0
+	MOVW	(R0), R1
+TEXT runtime·aeshash32(SB),NOSPLIT,$-8-0
+	MOVW	$0, R0
+	MOVW	(R0), R1
+TEXT runtime·aeshash64(SB),NOSPLIT,$-8-0
+	MOVW	$0, R0
+	MOVW	(R0), R1
+TEXT runtime·aeshashstr(SB),NOSPLIT,$-8-0
+	MOVW	$0, R0
+	MOVW	(R0), R1
+
 // bool casp(void **val, void *old, void *new)
 // Atomically:
 //	if(*val == old){
@@ -521,11 +538,11 @@ TEXT ·asmcgocall(SB),NOSPLIT,$0-16
 	BL	asmcgocall<>(SB)
 	RET
 
-TEXT ·asmcgocall_errno(SB),NOSPLIT,$0-24
+TEXT ·asmcgocall_errno(SB),NOSPLIT,$0-20
 	MOVD	fn+0(FP), R1
 	MOVD	arg+8(FP), R0
 	BL	asmcgocall<>(SB)
-	MOVD	R0, ret+16(FP)
+	MOVW	R0, ret+16(FP)
 	RET
 
 // asmcgocall common code. fn in R1, arg in R0. returns errno in R0.
@@ -801,33 +818,31 @@ eq:
 	MOVB	R3, ret+16(FP)
 	RET
 
-TEXT runtime·cmpstring(SB),NOSPLIT,$0-40
+TEXT runtime·cmpstring(SB),NOSPLIT,$-4-40
 	MOVD	s1_base+0(FP), R2
 	MOVD	s1_len+8(FP), R0
 	MOVD	s2_base+16(FP), R3
 	MOVD	s2_len+24(FP), R1
-	BL	runtime·cmpbody<>(SB)
-	MOVD	R8, ret+32(FP)
-	RET
+	ADD	$40, RSP, R7
+	B	runtime·cmpbody<>(SB)
 
-TEXT bytes·Compare(SB),NOSPLIT,$0-56
+TEXT bytes·Compare(SB),NOSPLIT,$-4-56
 	MOVD	s1+0(FP), R2
 	MOVD	s1+8(FP), R0
 	MOVD	s2+24(FP), R3
 	MOVD	s2+32(FP), R1
-	BL	runtime·cmpbody<>(SB)
-	MOVD	R8, ret+48(FP)
-	RET
+	ADD	$56, RSP, R7
+	B	runtime·cmpbody<>(SB)
 
 // On entry:
 // R0 is the length of s1
 // R1 is the length of s2
 // R2 points to the start of s1
 // R3 points to the start of s2
+// R7 points to return value (-1/0/1 will be written here)
 //
 // On exit:
-// R8 is -1/0/+1
-// R5, R4, and R6 are clobbered
+// R4, R5, and R6 are clobbered
 TEXT runtime·cmpbody<>(SB),NOSPLIT,$-4-0
 	CMP	R0, R1
 	CSEL    LT, R1, R0, R6 // R6 is min(R0, R1)
@@ -841,14 +856,16 @@ loop:
 	CMP	R4, R5
 	BEQ	loop
 	// bytes differed
-	MOVD	$1, R8
-	CSNEG	LT, R8, R8, R8
+	MOVD	$1, R4
+	CSNEG	LT, R4, R4, R4
+	MOVD	R4, (R7)
 	RET
 samebytes:
-	MOVD	$1, R8
+	MOVD	$1, R4
 	CMP	R0, R1
-	CSNEG	LT, R8, R8, R8
-	CSEL	EQ, ZR, R8, R8
+	CSNEG	LT, R4, R4, R4
+	CSEL	EQ, ZR, R4, R4
+	MOVD	R4, (R7)
 	RET
 
 // eqstring tests whether two strings are equal.

@@ -10,11 +10,11 @@ import (
 	"cmd/internal/obj/x86"
 )
 
-var thechar int = '6'
-
-var thestring string = "amd64"
-
-var thelinkarch *obj.LinkArch = &x86.Linkamd64
+var (
+	thechar     int           = '6'
+	thestring   string        = "amd64"
+	thelinkarch *obj.LinkArch = &x86.Linkamd64
+)
 
 func linkarchinit() {
 	if obj.Getgoarch() == "amd64p32" {
@@ -27,17 +27,16 @@ func linkarchinit() {
 
 var MAXWIDTH int64 = 1 << 50
 
-var addptr int = x86.AADDQ
-
-var movptr int = x86.AMOVQ
-
-var leaptr int = x86.ALEAQ
-
-var cmpptr int = x86.ACMPQ
+var (
+	addptr int = x86.AADDQ
+	movptr int = x86.AMOVQ
+	leaptr int = x86.ALEAQ
+	cmpptr int = x86.ACMPQ
+)
 
 /*
  * go declares several platform-specific type aliases:
- * int, uint, float, and uintptr
+ * int, uint, and uintptr
  */
 var typedefs = []gc.Typedef{
 	gc.Typedef{"int", gc.TINT, gc.TINT64},
@@ -101,6 +100,7 @@ func main() {
 	gc.Thearch.Expandchecks = expandchecks
 	gc.Thearch.Getg = getg
 	gc.Thearch.Gins = gins
+	gc.Thearch.Ginsboolval = ginsboolval
 	gc.Thearch.Ginscon = ginscon
 	gc.Thearch.Ginsnop = ginsnop
 	gc.Thearch.Gmove = gmove
@@ -111,7 +111,7 @@ func main() {
 	gc.Thearch.Sameaddr = sameaddr
 	gc.Thearch.Smallindir = smallindir
 	gc.Thearch.Stackaddr = stackaddr
-	gc.Thearch.Stackcopy = stackcopy
+	gc.Thearch.Blockcopy = blockcopy
 	gc.Thearch.Sudoaddable = sudoaddable
 	gc.Thearch.Sudoclean = sudoclean
 	gc.Thearch.Excludedregs = excludedregs

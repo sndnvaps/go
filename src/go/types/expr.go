@@ -9,10 +9,9 @@ package types
 import (
 	"fmt"
 	"go/ast"
+	exact "go/constants" // Renamed to reduce diffs from x/tools.  TODO: remove
 	"go/token"
 	"math"
-
-	"go/exact"
 )
 
 /*
@@ -118,11 +117,11 @@ func (check *Checker) unary(x *operand, op token.Token) {
 
 	if x.mode == constant {
 		typ := x.typ.Underlying().(*Basic)
-		size := -1
+		var prec uint
 		if isUnsigned(typ) {
-			size = int(check.conf.sizeof(typ))
+			prec = uint(check.conf.sizeof(typ) * 8)
 		}
-		x.val = exact.UnaryOp(op, x.val, size)
+		x.val = exact.UnaryOp(op, x.val, prec)
 		// Typed constants must be representable in
 		// their type after each constant operation.
 		if isTyped(typ) {

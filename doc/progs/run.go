@@ -9,8 +9,10 @@ import (
 	"bytes"
 	"flag"
 	"fmt"
+	"io/ioutil"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
@@ -39,6 +41,12 @@ func main() {
 		onlyTest(flag.Args()...)
 	}
 
+	tmpdir, err := ioutil.TempDir("", "go-progs")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+
 	// ratec limits the number of tests running concurrently.
 	// None of the tests are intensive, so don't bother
 	// trying to manually adjust for slow builders.
@@ -49,7 +57,7 @@ func main() {
 		tt := tt
 		ratec <- true
 		go func() {
-			errc <- test(tt.file, tt.want)
+			errc <- test(tmpdir, tt.file, tt.want)
 			<-ratec
 		}()
 	}
@@ -61,30 +69,32 @@ func main() {
 			rc = 1
 		}
 	}
+	os.Remove(tmpdir)
 	os.Exit(rc)
 }
 
 // test builds the test in the given file.
 // If want is non-empty, test also runs the test
 // and checks that the output matches the regexp want.
-func test(file, want string) error {
+func test(tmpdir, file, want string) error {
 	// Build the program.
-	cmd := exec.Command("go", "build", file+".go")
+	prog := filepath.Join(tmpdir, file)
+	cmd := exec.Command("go", "build", "-o", prog, file+".go")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("go build %s.go failed: %v\nOutput:\n%s", file, err, out)
 	}
-	defer os.Remove(file)
+	defer os.Remove(prog)
 
 	// Only run the test if we have output to check.
 	if want == "" {
 		return nil
 	}
 
-	cmd = exec.Command("./" + file)
+	cmd = exec.Command(prog)
 	out, err = cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("./%s failed: %v\nOutput:\n%s", file, err, out)
+		return fmt.Errorf("%s failed: %v\nOutput:\n%s", file, err, out)
 	}
 
 	// Canonicalize output.
@@ -159,7 +169,7 @@ var tests = []testcase{
 	{"image_package6", `^8 4 true$`},
 
 	// other
-	{"go1", `^Christmas is a holiday: true Sleeping for 0.123s.*go1.go already exists$`},
+	{"go1", `^Christmas is a holiday: true .*go1.go already exists$`},
 	{"slices", ""},
 }
 
@@ -209,11 +219,11 @@ func fixcgo() {
 		// cgo1 and cgo2 don't run on netbsd, srandom has a different signature
 		skipTest("cgo1")
 		skipTest("cgo2")
-		// cgo3 and cgo4 don't run on netbsd, since cgo cannot handle stdout correctly
+		// cgo3 and cgo4 don't run on netbsd, since cgo cannot handle stdout correctly, see issue #10715.
 		skipTest("cgo3")
 		skipTest("cgo4")
-	case "openbsd":
-		// cgo3 and cgo4 don't run on openbsd and solaris, since cgo cannot handle stdout correctly
+	case "openbsd", "solaris":
+		// cgo3 and cgo4 don't run on openbsd and solaris, since cgo cannot handle stdout correctly, see issue #10715.
 		skipTest("cgo3")
 		skipTest("cgo4")
 	}

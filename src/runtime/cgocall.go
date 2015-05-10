@@ -132,12 +132,6 @@ func cgocall_errno(fn, arg unsafe.Pointer) int32 {
 //go:nosplit
 func endcgo(mp *m) {
 	mp.ncgo--
-	if mp.ncgo == 0 {
-		// We are going back to Go and are not in a recursive
-		// call.  Let the GC collect any memory allocated via
-		// _cgo_allocate that is no longer referenced.
-		mp.cgomal = nil
-	}
 
 	if raceenabled {
 		raceacquire(unsafe.Pointer(&racecgosync))
@@ -191,6 +185,14 @@ func cgocallbackg1() {
 	if gp.m.needextram {
 		gp.m.needextram = false
 		systemstack(newextram)
+	}
+
+	if gp.m.ncgo == 0 {
+		// The C call to Go came from a thread not currently running
+		// any Go. In the case of -buildmode=c-archive or c-shared,
+		// this call may be coming in before package initialization
+		// is complete. Wait until it is.
+		<-main_init_done
 	}
 
 	// Add entry to defer stack in case of panic.

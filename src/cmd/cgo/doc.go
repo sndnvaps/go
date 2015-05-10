@@ -239,6 +239,13 @@ The following options are available when running cgo directly:
 		syscall package when bootstrapping a new target.
 	-objdir directory
 		Put all generated files in directory.
+	-importpath string
+		The import path for the Go package. Optional; used for
+		nicer comments in the generated files.
+	-exportheader file
+		If there are any exported functions, write the
+		generated export declarations to file.
+		C code can #include this to see the declarations.
 	-gccgo
 		Generate output for the gccgo compiler rather than the
 		gc compiler.

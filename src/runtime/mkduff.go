@@ -15,7 +15,7 @@
 // the routine to copy chunks of memory.
 // Source and destination must not overlap.
 // Do not change duffcopy without also
-// changing stackcopy in cmd/?g/cgen.go.
+// changing blockcopy in cmd/?g/cgen.go.
 
 // See the zero* and copy* generators below
 // for architecture-specific comments.
@@ -64,7 +64,15 @@ func zeroAMD64(w io.Writer) {
 	// DI: ptr to memory to be zeroed
 	// DI is updated as a side effect.
 	fmt.Fprintln(w, "TEXT runtime·duffzero(SB), NOSPLIT, $0-0")
-	for i := 0; i < 128; i++ {
+	for i := 0; i < 31; i++ {
+		fmt.Fprintln(w, "\tMOVQ\tAX,(DI)")
+		fmt.Fprintln(w, "\tMOVQ\tAX,8(DI)")
+		fmt.Fprintln(w, "\tMOVQ\tAX,16(DI)")
+		fmt.Fprintln(w, "\tMOVQ\tAX,24(DI)")
+		fmt.Fprintln(w, "\tADDQ\t$32,DI")
+		fmt.Fprintln(w)
+	}
+	for i := 0; i < 4; i++ {
 		fmt.Fprintln(w, "\tSTOSQ")
 	}
 	fmt.Fprintln(w, "\tRET")

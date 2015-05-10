@@ -35,6 +35,8 @@ var goarch string
 
 var goroot string
 
+var Debug_wb int
+
 // Debug arguments.
 // These can be specified with the -d flag, as in "-d nil"
 // to set the debug_checknil variable. In general the list passed
@@ -46,6 +48,7 @@ var debugtab = []struct {
 	{"nil", &Debug_checknil},          // print information about nil checks
 	{"typeassert", &Debug_typeassert}, // print information about type assertion inlining
 	{"disablenil", &Disable_checknil}, // disable nil checks
+	{"wb", &Debug_wb},                 // print information about write barriers
 }
 
 // Our own isdigit, isspace, isalpha, isalnum that take care
@@ -181,9 +184,9 @@ func Main() {
 	obj.Flagcount("%", "debug non-static initializers", &Debug['%'])
 	obj.Flagcount("A", "for bootstrapping, allow 'any' type", &Debug['A'])
 	obj.Flagcount("B", "disable bounds checking", &Debug['B'])
-	obj.Flagstr("D", "path: set relative path for local imports", &localimport)
+	obj.Flagstr("D", "set relative `path` for local imports", &localimport)
 	obj.Flagcount("E", "debug symbol export", &Debug['E'])
-	obj.Flagfn1("I", "dir: add dir to import search path", addidir)
+	obj.Flagfn1("I", "add `directory` to import search path", addidir)
 	obj.Flagcount("K", "debug missing line numbers", &Debug['K'])
 	obj.Flagcount("L", "use full (long) path in error messages", &Debug['L'])
 	obj.Flagcount("M", "debug move generation", &Debug['M'])
@@ -193,27 +196,27 @@ func Main() {
 	obj.Flagcount("S", "print assembly listing", &Debug['S'])
 	obj.Flagfn0("V", "print compiler version", doversion)
 	obj.Flagcount("W", "debug parse tree after type checking", &Debug['W'])
-	obj.Flagstr("asmhdr", "file: write assembly header to named file", &asmhdr)
+	obj.Flagstr("asmhdr", "write assembly header to `file`", &asmhdr)
 	obj.Flagcount("complete", "compiling complete package (no C or assembly)", &pure_go)
-	obj.Flagstr("d", "list: print debug information about items in list", &debugstr)
+	obj.Flagstr("d", "print debug information about items in `list`", &debugstr)
 	obj.Flagcount("e", "no limit on number of errors reported", &Debug['e'])
 	obj.Flagcount("f", "debug stack frames", &Debug['f'])
 	obj.Flagcount("g", "debug code generation", &Debug['g'])
 	obj.Flagcount("h", "halt on error", &Debug['h'])
 	obj.Flagcount("i", "debug line number stack", &Debug['i'])
-	obj.Flagstr("installsuffix", "pkg directory suffix", &flag_installsuffix)
+	obj.Flagstr("installsuffix", "set pkg directory `suffix`", &flag_installsuffix)
 	obj.Flagcount("j", "debug runtime-initialized variables", &Debug['j'])
 	obj.Flagcount("l", "disable inlining", &Debug['l'])
 	obj.Flagcount("live", "debug liveness analysis", &debuglive)
 	obj.Flagcount("m", "print optimization decisions", &Debug['m'])
 	obj.Flagcount("nolocalimports", "reject local (relative) imports", &nolocalimports)
-	obj.Flagstr("o", "obj: set output file", &outfile)
-	obj.Flagstr("p", "path: set expected package import path", &myimportpath)
+	obj.Flagstr("o", "write output to `file`", &outfile)
+	obj.Flagstr("p", "set expected package import `path`", &myimportpath)
 	obj.Flagcount("pack", "write package file instead of object file", &writearchive)
 	obj.Flagcount("r", "debug generated wrappers", &Debug['r'])
 	obj.Flagcount("race", "enable race detector", &flag_race)
 	obj.Flagcount("s", "warn about composite literals that can be simplified", &Debug['s'])
-	obj.Flagstr("trimpath", "prefix: remove prefix from recorded source file paths", &Ctxt.Trimpath)
+	obj.Flagstr("trimpath", "remove `prefix` from recorded source file paths", &Ctxt.LineHist.TrimPathPrefix)
 	obj.Flagcount("u", "reject unsafe code", &safemode)
 	obj.Flagcount("v", "increase debug verbosity", &Debug['v'])
 	obj.Flagcount("w", "debug type checking", &Debug['w'])
@@ -228,8 +231,9 @@ func Main() {
 		obj.Flagcount("shared", "generate code that can be linked into a shared library", &flag_shared)
 		flag.BoolVar(&flag_dynlink, "dynlink", false, "support references to Go symbols defined in other shared libraries")
 	}
-	obj.Flagstr("cpuprofile", "file: write cpu profile to file", &cpuprofile)
-	obj.Flagstr("memprofile", "file: write memory profile to file", &memprofile)
+	obj.Flagstr("cpuprofile", "write cpu profile to `file`", &cpuprofile)
+	obj.Flagstr("memprofile", "write memory profile to `file`", &memprofile)
+	obj.Flagint64("memprofilerate", "set runtime.MemProfileRate to `rate`", &memprofilerate)
 	obj.Flagparse(usage)
 
 	if flag_dynlink {
@@ -254,24 +258,29 @@ func Main() {
 
 	// parse -d argument
 	if debugstr != "" {
-		var j int
-		f := strings.Split(debugstr, ",")
-		for i := range f {
-			if f[i] == "" {
+	Split:
+		for _, name := range strings.Split(debugstr, ",") {
+			if name == "" {
 				continue
 			}
-			for j = 0; j < len(debugtab); j++ {
-				if debugtab[j].name == f[i] {
-					if debugtab[j].val != nil {
-						*debugtab[j].val = 1
+			val := 1
+			if i := strings.Index(name, "="); i >= 0 {
+				var err error
+				val, err = strconv.Atoi(name[i+1:])
+				if err != nil {
+					log.Fatalf("invalid debug value %v", name)
+				}
+				name = name[:i]
+			}
+			for _, t := range debugtab {
+				if t.name == name {
+					if t.val != nil {
+						*t.val = val
+						continue Split
 					}
-					break
 				}
 			}
-
-			if j >= len(debugtab) {
-				log.Fatalf("unknown debug information -d '%s'\n", f[i])
-			}
+			log.Fatalf("unknown debug key -d %s\n", name)
 		}
 	}
 
@@ -1380,7 +1389,7 @@ talph:
 	}
 
 	if Debug['x'] != 0 {
-		fmt.Printf("lex: %s %s\n", Sconv(s, 0), lexname(int(s.Lexical)))
+		fmt.Printf("lex: %s %s\n", s, lexname(int(s.Lexical)))
 	}
 	yylval.sym = s
 	return int32(s.Lexical)
@@ -1856,20 +1865,21 @@ func getc() int {
 			curio.cp = curio.cp[1:]
 		}
 	} else {
-		var c1 int
-		var c2 int
 	loop:
 		c = obj.Bgetc(curio.bin)
 		if c == 0xef {
-			c1 = obj.Bgetc(curio.bin)
-			c2 = obj.Bgetc(curio.bin)
-			if c1 == 0xbb && c2 == 0xbf {
+			buf, err := curio.bin.Peek(2)
+			if err != nil {
+				log.Fatalf("getc: peeking: %v", err)
+			}
+			if buf[0] == 0xbb && buf[1] == 0xbf {
 				yyerrorl(int(lexlineno), "Unicode (UTF-8) BOM in middle of file")
+
+				// consume BOM bytes
+				obj.Bgetc(curio.bin)
+				obj.Bgetc(curio.bin)
 				goto loop
 			}
-
-			obj.Bungetc(curio.bin)
-			obj.Bungetc(curio.bin)
 		}
 	}
 
@@ -2424,16 +2434,13 @@ var lexn = []struct {
 	{LVAR, "VAR"},
 }
 
-var lexname_buf string
-
 func lexname(lex int) string {
 	for i := 0; i < len(lexn); i++ {
 		if lexn[i].lex == lex {
 			return lexn[i].name
 		}
 	}
-	lexname_buf = fmt.Sprintf("LEX-%d", lex)
-	return lexname_buf
+	return fmt.Sprintf("LEX-%d", lex)
 }
 
 var yytfix = []struct {

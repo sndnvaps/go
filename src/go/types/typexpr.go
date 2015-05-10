@@ -8,11 +8,10 @@ package types
 
 import (
 	"go/ast"
+	exact "go/constants" // Renamed to reduce diffs from x/tools.  TODO: remove
 	"go/token"
 	"sort"
 	"strconv"
-
-	"go/exact"
 )
 
 // ident type-checks identifier e and initializes x with the value or type of e.

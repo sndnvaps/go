@@ -317,6 +317,7 @@ var debug struct {
 	wbshadow       int32
 	gccheckmark    int32
 	sbrk           int32
+	gcpacertrace   int32
 }
 
 var dbgvars = []dbgVar{
@@ -331,12 +332,10 @@ var dbgvars = []dbgVar{
 	{"wbshadow", &debug.wbshadow},
 	{"gccheckmark", &debug.gccheckmark},
 	{"sbrk", &debug.sbrk},
+	{"gcpacertrace", &debug.gcpacertrace},
 }
 
 func parsedebugvars() {
-	// gccheckmark is enabled by default for the 1.5 dev cycle
-	debug.gccheckmark = 1
-
 	for p := gogetenv("GODEBUG"); p != ""; {
 		field := ""
 		i := index(p, ",")
@@ -432,16 +431,4 @@ func reflect_typelinks() [][]*_type {
 		ret = append(ret, datap.typelinks)
 	}
 	return ret
-}
-
-// TODO: move back into mgc.go
-func readgogc() int32 {
-	p := gogetenv("GOGC")
-	if p == "" {
-		return 100
-	}
-	if p == "off" {
-		return -1
-	}
-	return int32(atoi(p))
 }

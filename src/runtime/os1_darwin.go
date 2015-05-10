@@ -51,7 +51,7 @@ var urandom_dev = []byte("/dev/urandom\x00")
 func getRandomData(r []byte) {
 	fd := open(&urandom_dev[0], 0 /* O_RDONLY */, 0)
 	n := read(fd, unsafe.Pointer(&r[0]), int32(len(r)))
-	close(fd)
+	closefd(fd)
 	extendRandom(r, int(n))
 }
 
@@ -98,8 +98,7 @@ func newosproc(mp *m, stk unsafe.Pointer) {
 //
 //go:nosplit
 func newosproc0(stacksize uintptr, fn unsafe.Pointer, fnarg uintptr) {
-	var dummy uint64
-	stack := sysAlloc(stacksize, &dummy)
+	stack := sysAlloc(stacksize, &memstats.stacks_sys)
 	if stack == nil {
 		write(2, unsafe.Pointer(&failallocatestack[0]), int32(len(failallocatestack)))
 		exit(1)

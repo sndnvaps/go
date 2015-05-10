@@ -51,8 +51,7 @@ var (
 
 	// dirs are the directories to look for *.go files in.
 	// TODO(bradfitz): just use all directories?
-	// TODO(rsc): Put syntax back. See issue 9968.
-	dirs = []string{".", "ken", "chan", "interface", "dwarf", "fixedbugs", "bugs"}
+	dirs = []string{".", "ken", "chan", "interface", "syntax", "dwarf", "fixedbugs", "bugs"}
 
 	// ratec controls the max number of tests running at a time.
 	ratec chan bool
@@ -830,22 +829,22 @@ func (t *test) updateErrors(out string, file string) {
 	tmpRe := regexp.MustCompile(`autotmp_[0-9]+`)
 	for _, errStr := range splitOutput(out) {
 		colon1 := strings.Index(errStr, ":")
-		if colon1 < 0 || errStr[:colon1] != file{
+		if colon1 < 0 || errStr[:colon1] != file {
 			continue
 		}
 		colon2 := strings.Index(errStr[colon1+1:], ":")
 		if colon2 < 0 {
 			continue
 		}
-		colon2 += colon1+1
-		line, err := strconv.Atoi(errStr[colon1+1:colon2])
+		colon2 += colon1 + 1
+		line, err := strconv.Atoi(errStr[colon1+1 : colon2])
 		line--
 		if err != nil || line < 0 || line >= len(lines) {
 			continue
 		}
 		msg := errStr[colon2+2:]
 		for _, r := range []string{`\`, `*`, `+`, `[`, `]`, `(`, `)`} {
-			msg = strings.Replace(msg, r, `\` + r, -1)
+			msg = strings.Replace(msg, r, `\`+r, -1)
 		}
 		msg = strings.Replace(msg, `"`, `.`, -1)
 		msg = tmpRe.ReplaceAllLiteralString(msg, `autotmp_[0-9]+`)

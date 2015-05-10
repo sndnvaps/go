@@ -60,50 +60,10 @@ func TestResolveUDPAddr(t *testing.T) {
 	}
 }
 
-func TestReadFromUDP(t *testing.T) {
-	switch runtime.GOOS {
-	case "nacl", "plan9":
-		t.Skipf("skipping test on %q, see issue 8916", runtime.GOOS)
-	}
-
-	ra, err := ResolveUDPAddr("udp", "127.0.0.1:7")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	la, err := ResolveUDPAddr("udp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	c, err := ListenUDP("udp", la)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer c.Close()
-
-	_, err = c.WriteToUDP([]byte("a"), ra)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	err = c.SetDeadline(time.Now().Add(100 * time.Millisecond))
-	if err != nil {
-		t.Fatal(err)
-	}
-	b := make([]byte, 1)
-	_, _, err = c.ReadFromUDP(b)
-	if err == nil {
-		t.Fatal("ReadFromUDP should fail")
-	} else if !isTimeout(err) {
-		t.Fatal(err)
-	}
-}
-
 func TestWriteToUDP(t *testing.T) {
 	switch runtime.GOOS {
 	case "plan9":
-		t.Skipf("skipping test on %q", runtime.GOOS)
+		t.Skipf("not supported on %s", runtime.GOOS)
 	}
 
 	c, err := ListenPacket("udp", "127.0.0.1:0")
@@ -128,35 +88,33 @@ func testWriteToConn(t *testing.T, raddr string) {
 		t.Fatal(err)
 	}
 
-	_, err = c.(*UDPConn).WriteToUDP([]byte("Connection-oriented mode socket"), ra)
+	b := []byte("CONNECTED-MODE SOCKET")
+	_, err = c.(*UDPConn).WriteToUDP(b, ra)
 	if err == nil {
-		t.Fatal("WriteToUDP should fail")
+		t.Fatal("should fail")
 	}
 	if err != nil && err.(*OpError).Err != ErrWriteToConnected {
-		t.Fatalf("WriteToUDP should fail as ErrWriteToConnected: %v", err)
+		t.Fatalf("should fail as ErrWriteToConnected: %v", err)
 	}
-
-	_, err = c.(*UDPConn).WriteTo([]byte("Connection-oriented mode socket"), ra)
+	_, err = c.(*UDPConn).WriteTo(b, ra)
 	if err == nil {
-		t.Fatal("WriteTo should fail")
+		t.Fatal("should fail")
 	}
 	if err != nil && err.(*OpError).Err != ErrWriteToConnected {
-		t.Fatalf("WriteTo should fail as ErrWriteToConnected: %v", err)
+		t.Fatalf("should fail as ErrWriteToConnected: %v", err)
 	}
-
-	_, err = c.Write([]byte("Connection-oriented mode socket"))
+	_, err = c.Write(b)
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	_, _, err = c.(*UDPConn).WriteMsgUDP([]byte("Connection-oriented mode socket"), nil, ra)
+	_, _, err = c.(*UDPConn).WriteMsgUDP(b, nil, ra)
 	if err == nil {
-		t.Fatal("WriteMsgUDP should fail")
+		t.Fatal("should fail")
 	}
 	if err != nil && err.(*OpError).Err != ErrWriteToConnected {
-		t.Fatalf("WriteMsgUDP should fail as ErrWriteToConnected: %v", err)
+		t.Fatalf("should fail as ErrWriteToConnected: %v", err)
 	}
-	_, _, err = c.(*UDPConn).WriteMsgUDP([]byte("Connection-oriented mode socket"), nil, nil)
+	_, _, err = c.(*UDPConn).WriteMsgUDP(b, nil, nil)
 	switch runtime.GOOS {
 	case "nacl", "windows": // see golang.org/issue/9252
 		t.Skipf("not implemented yet on %s", runtime.GOOS)
@@ -179,29 +137,27 @@ func testWriteToPacketConn(t *testing.T, raddr string) {
 		t.Fatal(err)
 	}
 
-	_, err = c.(*UDPConn).WriteToUDP([]byte("Connection-less mode socket"), ra)
+	b := []byte("UNCONNECTED-MODE SOCKET")
+	_, err = c.(*UDPConn).WriteToUDP(b, ra)
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	_, err = c.WriteTo([]byte("Connection-less mode socket"), ra)
+	_, err = c.WriteTo(b, ra)
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	_, err = c.(*UDPConn).Write([]byte("Connection-less mode socket"))
+	_, err = c.(*UDPConn).Write(b)
 	if err == nil {
-		t.Fatal("Write should fail")
+		t.Fatal("should fail")
 	}
-
-	_, _, err = c.(*UDPConn).WriteMsgUDP([]byte("Connection-less mode socket"), nil, nil)
+	_, _, err = c.(*UDPConn).WriteMsgUDP(b, nil, nil)
 	if err == nil {
-		t.Fatal("WriteMsgUDP should fail")
+		t.Fatal("should fail")
 	}
 	if err != nil && err.(*OpError).Err != errMissingAddress {
-		t.Fatalf("WriteMsgUDP should fail as errMissingAddress: %v", err)
+		t.Fatalf("should fail as errMissingAddress: %v", err)
 	}
-	_, _, err = c.(*UDPConn).WriteMsgUDP([]byte("Connection-less mode socket"), nil, ra)
+	_, _, err = c.(*UDPConn).WriteMsgUDP(b, nil, ra)
 	switch runtime.GOOS {
 	case "nacl", "windows": // see golang.org/issue/9252
 		t.Skipf("not implemented yet on %s", runtime.GOOS)
@@ -223,13 +179,13 @@ var udpConnLocalNameTests = []struct {
 
 func TestUDPConnLocalName(t *testing.T) {
 	if testing.Short() || !*testExternal {
-		t.Skip("skipping test to avoid external network")
+		t.Skip("avoid external network")
 	}
 
 	for _, tt := range udpConnLocalNameTests {
 		c, err := ListenUDP(tt.net, tt.laddr)
 		if err != nil {
-			t.Fatalf("ListenUDP failed: %v", err)
+			t.Fatal(err)
 		}
 		defer c.Close()
 		la := c.LocalAddr()
@@ -243,7 +199,7 @@ func TestUDPConnLocalAndRemoteNames(t *testing.T) {
 	for _, laddr := range []string{"", "127.0.0.1:0"} {
 		c1, err := ListenPacket("udp", "127.0.0.1:0")
 		if err != nil {
-			t.Fatalf("ListenUDP failed: %v", err)
+			t.Fatal(err)
 		}
 		defer c1.Close()
 
@@ -251,12 +207,12 @@ func TestUDPConnLocalAndRemoteNames(t *testing.T) {
 		if laddr != "" {
 			var err error
 			if la, err = ResolveUDPAddr("udp", laddr); err != nil {
-				t.Fatalf("ResolveUDPAddr failed: %v", err)
+				t.Fatal(err)
 			}
 		}
 		c2, err := DialUDP("udp", la, c1.LocalAddr().(*UDPAddr))
 		if err != nil {
-			t.Fatalf("DialUDP failed: %v", err)
+			t.Fatal(err)
 		}
 		defer c2.Close()
 
@@ -279,7 +235,7 @@ func TestUDPConnLocalAndRemoteNames(t *testing.T) {
 
 func TestIPv6LinkLocalUnicastUDP(t *testing.T) {
 	if testing.Short() || !*testExternal {
-		t.Skip("skipping test to avoid external network")
+		t.Skip("avoid external network")
 	}
 	if !supportsIPv6 {
 		t.Skip("ipv6 is not supported")
@@ -322,7 +278,7 @@ func TestIPv6LinkLocalUnicastUDP(t *testing.T) {
 		if err != nil {
 			// It might return "LookupHost returned no
 			// suitable address" error on some platforms.
-			t.Logf("ListenPacket failed: %v", err)
+			t.Log(err)
 			continue
 		}
 		defer c1.Close()
@@ -332,7 +288,7 @@ func TestIPv6LinkLocalUnicastUDP(t *testing.T) {
 
 		c2, err := Dial(tt.net, c1.LocalAddr().String())
 		if err != nil {
-			t.Fatalf("Dial failed: %v", err)
+			t.Fatal(err)
 		}
 		defer c2.Close()
 		if la, ok := c2.LocalAddr().(*UDPAddr); !ok || !tt.nameLookup && la.Zone == "" {
@@ -343,14 +299,88 @@ func TestIPv6LinkLocalUnicastUDP(t *testing.T) {
 		}
 
 		if _, err := c2.Write([]byte("UDP OVER IPV6 LINKLOCAL TEST")); err != nil {
-			t.Fatalf("Conn.Write failed: %v", err)
+			t.Fatal(err)
 		}
 		b := make([]byte, 32)
 		if _, from, err := c1.ReadFrom(b); err != nil {
-			t.Fatalf("PacketConn.ReadFrom failed: %v", err)
+			t.Fatal(err)
 		} else {
 			if ra, ok := from.(*UDPAddr); !ok || !tt.nameLookup && ra.Zone == "" {
 				t.Fatalf("got %v; expected a proper address with zone identifier", ra)
+			}
+		}
+	}
+}
+
+func TestUDPZeroBytePayload(t *testing.T) {
+	switch runtime.GOOS {
+	case "nacl", "plan9":
+		t.Skipf("not supported on %s", runtime.GOOS)
+	}
+
+	c, err := newLocalPacketListener("udp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	for _, genericRead := range []bool{false, true} {
+		n, err := c.WriteTo(nil, c.LocalAddr())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n != 0 {
+			t.Errorf("got %d; want 0", n)
+		}
+		c.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+		var b [1]byte
+		if genericRead {
+			_, err = c.(Conn).Read(b[:])
+		} else {
+			_, _, err = c.ReadFrom(b[:])
+		}
+		switch err {
+		case nil: // ReadFrom succeeds
+		default: // Read may timeout, it depends on the platform
+			if nerr, ok := err.(Error); !ok || !nerr.Timeout() {
+				t.Fatal(err)
+			}
+		}
+	}
+}
+
+func TestUDPZeroByteBuffer(t *testing.T) {
+	switch runtime.GOOS {
+	case "nacl", "plan9":
+		t.Skipf("not supported on %s", runtime.GOOS)
+	}
+
+	c, err := newLocalPacketListener("udp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	b := []byte("UDP ZERO BYTE BUFFER TEST")
+	for _, genericRead := range []bool{false, true} {
+		n, err := c.WriteTo(b, c.LocalAddr())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n != len(b) {
+			t.Errorf("got %d; want %d", n, len(b))
+		}
+		c.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+		if genericRead {
+			_, err = c.(Conn).Read(nil)
+		} else {
+			_, _, err = c.ReadFrom(nil)
+		}
+		switch err {
+		case nil: // ReadFrom succeeds
+		default: // Read may timeout, it depends on the platform
+			if nerr, ok := err.(Error); (!ok || !nerr.Timeout()) && runtime.GOOS != "windows" { // Windows retruns WSAEMSGSIZ
+				t.Fatal(err)
 			}
 		}
 	}

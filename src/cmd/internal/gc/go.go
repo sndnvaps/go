@@ -84,8 +84,7 @@ type Mpcplx struct {
 type Val struct {
 	Ctype int16
 	U     struct {
-		Reg  int16   // OREGISTER
-		Bval int16   // bool value CTBOOL
+		Bval bool    // bool value CTBOOL
 		Xval *Mpint  // int CTINT, rune CTRUNE
 		Fval *Mpflt  // float CTFLT
 		Cval *Mpcplx // float CTCPLX
@@ -214,19 +213,6 @@ type InitPlan struct {
 	Expr int64
 	E    []InitEntry
 }
-
-const (
-	EscUnknown = iota
-	EscHeap
-	EscScope
-	EscNone
-	EscReturn
-	EscNever
-	EscBits           = 3
-	EscMask           = (1 << EscBits) - 1
-	EscContentEscapes = 1 << EscBits // value obtained by indirect of parameter escapes to some returned result
-	EscReturnBits     = EscBits + 1
-)
 
 const (
 	SymExport   = 1 << 0 // to be exported
@@ -769,6 +755,7 @@ type Arch struct {
 	REGRETURN    int // AX
 	REGMIN       int
 	REGMAX       int
+	REGZERO      int // architectural zero register, if available
 	FREGMIN      int
 	FREGMAX      int
 	MAXWIDTH     int64
@@ -776,8 +763,8 @@ type Arch struct {
 
 	AddIndex     func(*Node, int64, *Node) bool // optional
 	Betypeinit   func()
-	Bgen_float   func(*Node, int, int, *obj.Prog) // optional
-	Cgen64       func(*Node, *Node)               // only on 32-bit systems
+	Bgen_float   func(*Node, bool, int, *obj.Prog) // optional
+	Cgen64       func(*Node, *Node)                // only on 32-bit systems
 	Cgenindex    func(*Node, *Node, bool) *obj.Prog
 	Cgen_bmul    func(int, *Node, *Node, *Node) bool
 	Cgen_float   func(*Node, *Node) // optional
@@ -791,6 +778,13 @@ type Arch struct {
 	Expandchecks func(*obj.Prog)
 	Getg         func(*Node)
 	Gins         func(int, *Node, *Node) *obj.Prog
+	// Ginsboolval inserts instructions to convert the result
+	// of a just-completed comparison to a boolean value.
+	// The first argument is the conditional jump instruction
+	// corresponding to the desired value.
+	// The second argument is the destination.
+	// If not present, Ginsboolval will be emulated with jumps.
+	Ginsboolval  func(int, *Node)
 	Ginscon      func(int, int64, *Node)
 	Ginsnop      func()
 	Gmove        func(*Node, *Node)
@@ -802,7 +796,7 @@ type Arch struct {
 	Sameaddr     func(*obj.Addr, *obj.Addr) bool
 	Smallindir   func(*obj.Addr, *obj.Addr) bool
 	Stackaddr    func(*obj.Addr) bool
-	Stackcopy    func(*Node, *Node, int64, int64, int64)
+	Blockcopy    func(*Node, *Node, int64, int64, int64)
 	Sudoaddable  func(int, *Node, *obj.Addr) bool
 	Sudoclean    func()
 	Excludedregs func() uint64

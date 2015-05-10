@@ -8,9 +8,8 @@ package types
 
 import (
 	"go/ast"
+	exact "go/constants" // Renamed to reduce diffs from x/tools.  TODO: remove
 	"go/token"
-
-	"go/exact"
 )
 
 // builtin type-checks a call to the built-in specified by id and

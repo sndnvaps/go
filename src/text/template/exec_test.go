@@ -527,8 +527,10 @@ var execTests = []execTest{
 	{"bug12XE", "{{printf `%T` 0XEE}}", "int", T{}, true},
 	// Chained nodes did not work as arguments. Issue 8473.
 	{"bug13", "{{print (.Copy).I}}", "17", tVal, true},
-	// Didn't protect against explicit nil in field chains.
-	{"bug14", "{{nil.True}}", "", tVal, false},
+	// Didn't protect against nil or literal values in field chains.
+	{"bug14a", "{{(nil).True}}", "", tVal, false},
+	{"bug14b", "{{$x := nil}}{{$x.anything}}", "", tVal, false},
+	{"bug14c", `{{$x := (1.0)}}{{$y := ("hello")}}{{$x.anything}}{{$y.true}}`, "", tVal, false},
 }
 
 func zeroArgs() string {
@@ -1093,5 +1095,18 @@ func TestMissingMapKey(t *testing.T) {
 	err = tmpl.Execute(&b, data)
 	if err == nil {
 		t.Errorf("expected error; got none")
+	}
+}
+
+// Test that the error message for multiline unterminated string
+// refers to the line number of the opening quote.
+func TestUnterminatedStringError(t *testing.T) {
+	_, err := New("X").Parse("hello\n\n{{`unterminated\n\n\n\n}}\n some more\n\n")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	str := err.Error()
+	if !strings.Contains(str, "X:3: unexpected unterminated raw quoted strin") {
+		t.Fatalf("unexpected error: %s", str)
 	}
 }

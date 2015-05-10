@@ -56,6 +56,7 @@ func linkarchinit() {
 	ld.Thearch.Maxalign = MaxAlign
 	ld.Thearch.Minlc = MINLC
 	ld.Thearch.Dwarfregsp = DWARFREGSP
+	ld.Thearch.Dwarfreglr = DWARFREGLR
 
 	ld.Thearch.Adddynlib = adddynlib
 	ld.Thearch.Adddynrel = adddynrel
@@ -88,6 +89,11 @@ func archinit() {
 		ld.Linkmode = ld.LinkInternal
 	}
 
+	// Darwin/arm64 only supports external linking
+	if ld.HEADTYPE == obj.Hdarwin {
+		ld.Linkmode = ld.LinkExternal
+	}
+
 	switch ld.HEADTYPE {
 	default:
 		if ld.Linkmode == ld.LinkAuto {
@@ -96,17 +102,15 @@ func archinit() {
 		if ld.Linkmode == ld.LinkExternal && obj.Getgoextlinkenabled() != "1" {
 			log.Fatalf("cannot use -linkmode=external with -H %s", ld.Headstr(int(ld.HEADTYPE)))
 		}
-	case ld.Hlinux:
+	case obj.Hlinux, obj.Hdarwin:
 		break
 	}
 
 	switch ld.HEADTYPE {
 	default:
-		ld.Diag("unknown -H option")
-		ld.Errorexit()
-		fallthrough
+		ld.Exitf("unknown -H option: %v", ld.HEADTYPE)
 
-	case ld.Hplan9: /* plan 9 */
+	case obj.Hplan9: /* plan 9 */
 		ld.HEADR = 32
 
 		if ld.INITTEXT == -1 {
@@ -119,7 +123,7 @@ func archinit() {
 			ld.INITRND = 4096
 		}
 
-	case ld.Hlinux: /* arm64 elf */
+	case obj.Hlinux: /* arm64 elf */
 		ld.Elfinit()
 		ld.HEADR = ld.ELFRESERVE
 		if ld.INITTEXT == -1 {
@@ -132,7 +136,21 @@ func archinit() {
 			ld.INITRND = 0x10000
 		}
 
-	case ld.Hnacl:
+	case obj.Hdarwin: /* apple MACH */
+		ld.Debug['w'] = 1 // disable DWARF generation
+		ld.Machoinit()
+		ld.HEADR = ld.INITIAL_MACHO_HEADR
+		if ld.INITTEXT == -1 {
+			ld.INITTEXT = 4096 + int64(ld.HEADR)
+		}
+		if ld.INITDAT == -1 {
+			ld.INITDAT = 0
+		}
+		if ld.INITRND == -1 {
+			ld.INITRND = 4096
+		}
+
+	case obj.Hnacl:
 		ld.Elfinit()
 		ld.HEADR = 0x10000
 		ld.Funcalign = 16

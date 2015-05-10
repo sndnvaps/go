@@ -40,13 +40,13 @@ func main() {
 	if *flags.PrintOut {
 		ctxt.Debugasm = 1
 	}
-	ctxt.Trimpath = *flags.TrimPath
+	ctxt.LineHist.TrimPathPrefix = *flags.TrimPath
 	ctxt.Flag_dynlink = *flags.Dynlink
 	if *flags.Shared || *flags.Dynlink {
 		ctxt.Flag_shared = 1
 	}
 	ctxt.Bso = obj.Binitw(os.Stdout)
-	defer obj.Bflush(ctxt.Bso)
+	defer ctxt.Bso.Flush()
 	ctxt.Diag = log.Fatalf
 	output := obj.Binitw(fd)
 	fmt.Fprintf(output, "go object %s %s %s\n", obj.Getgoos(), obj.Getgoarch(), obj.Getgoversion())
@@ -63,5 +63,5 @@ func main() {
 		os.Exit(1)
 	}
 	obj.Writeobjdirect(ctxt, output)
-	obj.Bflush(output)
+	output.Flush()
 }

@@ -77,11 +77,11 @@ func racewalk(fn *Node) {
 	fn.Func.Exit = list(fn.Func.Exit, nd)
 
 	if Debug['W'] != 0 {
-		s := fmt.Sprintf("after racewalk %v", Sconv(fn.Nname.Sym, 0))
+		s := fmt.Sprintf("after racewalk %v", fn.Nname.Sym)
 		dumplist(s, fn.Nbody)
-		s = fmt.Sprintf("enter %v", Sconv(fn.Nname.Sym, 0))
+		s = fmt.Sprintf("enter %v", fn.Nname.Sym)
 		dumplist(s, fn.Func.Enter)
-		s = fmt.Sprintf("exit %v", Sconv(fn.Nname.Sym, 0))
+		s = fmt.Sprintf("exit %v", fn.Nname.Sym)
 		dumplist(s, fn.Func.Exit)
 	}
 }
@@ -137,7 +137,7 @@ func racewalknode(np **Node, init **NodeList, wr int, skip int) {
 	default:
 		Fatal("racewalk: unknown node type %v", Oconv(int(n.Op), 0))
 
-	case OAS, OAS2FUNC:
+	case OAS, OASWB, OAS2FUNC:
 		racewalknode(&n.Left, init, 1, 0)
 		racewalknode(&n.Right, init, 0, 0)
 		goto ret

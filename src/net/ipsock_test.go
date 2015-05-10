@@ -216,7 +216,7 @@ var addrListTests = []struct {
 
 func TestAddrList(t *testing.T) {
 	if !supportsIPv4 || !supportsIPv6 {
-		t.Skip("ipv4 or ipv6 is not supported")
+		t.Skip("both IPv4 and IPv6 are required")
 	}
 
 	for i, tt := range addrListTests {
@@ -226,7 +226,7 @@ func TestAddrList(t *testing.T) {
 		}
 		if tt.err != nil {
 			if len(addrs) != 0 {
-				t.Errorf("#%v: got %v; want 0", len(addrs))
+				t.Errorf("#%v: got %v; want 0", i, len(addrs))
 			}
 			continue
 		}

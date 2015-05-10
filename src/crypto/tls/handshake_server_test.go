@@ -303,19 +303,20 @@ func TestClose(t *testing.T) {
 	}
 }
 
-func testHandshake(clientConfig, serverConfig *Config) (state ConnectionState, err error) {
+func testHandshake(clientConfig, serverConfig *Config) (serverState, clientState ConnectionState, err error) {
 	c, s := net.Pipe()
 	done := make(chan bool)
 	go func() {
 		cli := Client(c, clientConfig)
 		cli.Handshake()
+		clientState = cli.ConnectionState()
 		c.Close()
 		done <- true
 	}()
 	server := Server(s, serverConfig)
 	err = server.Handshake()
 	if err == nil {
-		state = server.ConnectionState()
+		serverState = server.ConnectionState()
 	}
 	s.Close()
 	<-done
@@ -330,7 +331,7 @@ func TestVersion(t *testing.T) {
 	clientConfig := &Config{
 		InsecureSkipVerify: true,
 	}
-	state, err := testHandshake(clientConfig, serverConfig)
+	state, _, err := testHandshake(clientConfig, serverConfig)
 	if err != nil {
 		t.Fatalf("handshake failed: %s", err)
 	}
@@ -349,7 +350,7 @@ func TestCipherSuitePreference(t *testing.T) {
 		CipherSuites:       []uint16{TLS_RSA_WITH_AES_128_CBC_SHA, TLS_RSA_WITH_RC4_128_SHA},
 		InsecureSkipVerify: true,
 	}
-	state, err := testHandshake(clientConfig, serverConfig)
+	state, _, err := testHandshake(clientConfig, serverConfig)
 	if err != nil {
 		t.Fatalf("handshake failed: %s", err)
 	}
@@ -359,12 +360,39 @@ func TestCipherSuitePreference(t *testing.T) {
 	}
 
 	serverConfig.PreferServerCipherSuites = true
-	state, err = testHandshake(clientConfig, serverConfig)
+	state, _, err = testHandshake(clientConfig, serverConfig)
 	if err != nil {
 		t.Fatalf("handshake failed: %s", err)
 	}
 	if state.CipherSuite != TLS_RSA_WITH_RC4_128_SHA {
 		t.Fatalf("Server's preference was not used, got %x", state.CipherSuite)
+	}
+}
+
+func TestSCTHandshake(t *testing.T) {
+	expected := [][]byte{[]byte("certificate"), []byte("transparency")}
+	serverConfig := &Config{
+		Certificates: []Certificate{{
+			Certificate:                 [][]byte{testRSACertificate},
+			PrivateKey:                  testRSAPrivateKey,
+			SignedCertificateTimestamps: expected,
+		}},
+	}
+	clientConfig := &Config{
+		InsecureSkipVerify: true,
+	}
+	_, state, err := testHandshake(clientConfig, serverConfig)
+	if err != nil {
+		t.Fatalf("handshake failed: %s", err)
+	}
+	actual := state.SignedCertificateTimestamps
+	if len(actual) != len(expected) {
+		t.Fatalf("got %d scts, want %d", len(actual), len(expected))
+	}
+	for i, sct := range expected {
+		if !bytes.Equal(sct, actual[i]) {
+			t.Fatalf("SCT #%d was %x, but expected %x", i, actual[i], sct)
+		}
 	}
 }
 
@@ -385,9 +413,6 @@ type serverTest struct {
 	expectedPeerCerts []string
 	// config, if not nil, contains a custom Config to use for this test.
 	config *Config
-	// expectAlert, if true, indicates that a fatal alert should be returned
-	// when handshaking with the server.
-	expectAlert bool
 	// expectHandshakeErrorIncluding, when not empty, contains a string
 	// that must be a substring of the error resulting from the handshake.
 	expectHandshakeErrorIncluding string
@@ -512,9 +537,7 @@ func (test *serverTest) run(t *testing.T, write bool) {
 	if !write {
 		flows, err := test.loadData()
 		if err != nil {
-			if !test.expectAlert {
-				t.Fatalf("%s: failed to load data from %s", test.name, test.dataPath())
-			}
+			t.Fatalf("%s: failed to load data from %s", test.name, test.dataPath())
 		}
 		for i, b := range flows {
 			if i%2 == 0 {
@@ -523,17 +546,11 @@ func (test *serverTest) run(t *testing.T, write bool) {
 			}
 			bb := make([]byte, len(b))
 			n, err := io.ReadFull(clientConn, bb)
-			if test.expectAlert {
-				if err == nil {
-					t.Fatal("Expected read failure but read succeeded")
-				}
-			} else {
-				if err != nil {
-					t.Fatalf("%s #%d: %s\nRead %d, wanted %d, got %x, wanted %x\n", test.name, i+1, err, n, len(bb), bb[:n], b)
-				}
-				if !bytes.Equal(b, bb) {
-					t.Fatalf("%s #%d: mismatch on read: got:%x want:%x", test.name, i+1, bb, b)
-				}
+			if err != nil {
+				t.Fatalf("%s #%d: %s\nRead %d, wanted %d, got %x, wanted %x\n", test.name, i+1, err, n, len(bb), bb[:n], b)
+			}
+			if !bytes.Equal(b, bb) {
+				t.Fatalf("%s #%d: mismatch on read: got:%x want:%x", test.name, i+1, bb, b)
 			}
 		}
 		clientConn.Close()
@@ -735,7 +752,7 @@ func TestHandshakeServerSNIGetCertificate(t *testing.T) {
 		return cert, nil
 	}
 	test := &serverTest{
-		name:    "SNI",
+		name:    "SNI-GetCertificate",
 		command: []string{"openssl", "s_client", "-no_ticket", "-cipher", "AES128-SHA", "-servername", "snitest.com"},
 		config:  &config,
 	}
@@ -753,7 +770,7 @@ func TestHandshakeServerSNIGetCertificateNotFound(t *testing.T) {
 		return nil, nil
 	}
 	test := &serverTest{
-		name:    "SNI",
+		name:    "SNI-GetCertificateNotFound",
 		command: []string{"openssl", "s_client", "-no_ticket", "-cipher", "AES128-SHA", "-servername", "snitest.com"},
 		config:  &config,
 	}
@@ -763,18 +780,50 @@ func TestHandshakeServerSNIGetCertificateNotFound(t *testing.T) {
 // TestHandshakeServerSNICertForNameError tests to make sure that errors in
 // GetCertificate result in a tls alert.
 func TestHandshakeServerSNIGetCertificateError(t *testing.T) {
-	config := *testConfig
+	const errMsg = "TestHandshakeServerSNIGetCertificateError error"
 
-	config.GetCertificate = func(clientHello *ClientHelloInfo) (*Certificate, error) {
-		return nil, fmt.Errorf("Test error in GetCertificate")
+	serverConfig := *testConfig
+	serverConfig.GetCertificate = func(clientHello *ClientHelloInfo) (*Certificate, error) {
+		return nil, errors.New(errMsg)
 	}
-	test := &serverTest{
-		name:        "SNI",
-		command:     []string{"openssl", "s_client", "-no_ticket", "-cipher", "AES128-SHA", "-servername", "snitest.com"},
-		config:      &config,
-		expectAlert: true,
+
+	clientHello := &clientHelloMsg{
+		vers:               0x0301,
+		cipherSuites:       []uint16{TLS_RSA_WITH_RC4_128_SHA},
+		compressionMethods: []uint8{0},
+		serverName:         "test",
 	}
-	runServerTestTLS12(t, test)
+	testClientHelloFailure(t, &serverConfig, clientHello, errMsg)
+}
+
+// TestHandshakeServerEmptyCertificates tests that GetCertificates is called in
+// the case that Certificates is empty, even without SNI.
+func TestHandshakeServerEmptyCertificates(t *testing.T) {
+	const errMsg = "TestHandshakeServerEmptyCertificates error"
+
+	serverConfig := *testConfig
+	serverConfig.GetCertificate = func(clientHello *ClientHelloInfo) (*Certificate, error) {
+		return nil, errors.New(errMsg)
+	}
+	serverConfig.Certificates = nil
+
+	clientHello := &clientHelloMsg{
+		vers:               0x0301,
+		cipherSuites:       []uint16{TLS_RSA_WITH_RC4_128_SHA},
+		compressionMethods: []uint8{0},
+	}
+	testClientHelloFailure(t, &serverConfig, clientHello, errMsg)
+
+	// With an empty Certificates and a nil GetCertificate, the server
+	// should always return a “no certificates” error.
+	serverConfig.GetCertificate = nil
+
+	clientHello = &clientHelloMsg{
+		vers:               0x0301,
+		cipherSuites:       []uint16{TLS_RSA_WITH_RC4_128_SHA},
+		compressionMethods: []uint8{0},
+	}
+	testClientHelloFailure(t, &serverConfig, clientHello, "no certificates")
 }
 
 // TestCipherSuiteCertPreferance ensures that we select an RSA ciphersuite with

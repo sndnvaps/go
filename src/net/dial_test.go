@@ -5,20 +5,57 @@
 package net
 
 import (
-	"fmt"
 	"net/internal/socktest"
-	"reflect"
-	"regexp"
 	"runtime"
 	"sync"
 	"testing"
 	"time"
 )
 
+var prohibitionaryDialArgTests = []struct {
+	network string
+	address string
+}{
+	{"tcp6", "127.0.0.1"},
+	{"tcp6", "::ffff:127.0.0.1"},
+}
+
+func TestProhibitionaryDialArg(t *testing.T) {
+	switch runtime.GOOS {
+	case "plan9":
+		t.Skipf("not supported on %s", runtime.GOOS)
+	}
+	if testing.Short() || !*testExternal {
+		t.Skip("avoid external network")
+	}
+	if !supportsIPv4map {
+		t.Skip("mapping ipv4 address inside ipv6 address not supported")
+	}
+
+	ln, err := Listen("tcp", "[::]:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	_, port, err := SplitHostPort(ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for i, tt := range prohibitionaryDialArgTests {
+		c, err := Dial(tt.network, JoinHostPort(tt.address, port))
+		if err == nil {
+			c.Close()
+			t.Errorf("#%d: %v", i, err)
+		}
+	}
+}
+
 func TestSelfConnect(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		// TODO(brainman): do not know why it hangs.
-		t.Skip("skipping known-broken test on windows")
+		t.Skip("known-broken test on windows")
 	}
 
 	// Test that Dial does not honor self-connects.
@@ -57,108 +94,6 @@ func TestSelfConnect(t *testing.T) {
 				t.Logf("#%d: Dial %q succeeded - possibly racing with other listener", i, addr)
 			}
 			c.Close()
-		}
-	}
-}
-
-type DialErrorTest struct {
-	Net     string
-	Raddr   string
-	Pattern string
-}
-
-var dialErrorTests = []DialErrorTest{
-	{
-		"datakit", "mh/astro/r70",
-		"dial datakit mh/astro/r70: unknown network datakit",
-	},
-	{
-		"tcp", "127.0.0.1:☺",
-		"dial tcp 127.0.0.1:☺: unknown port tcp/☺",
-	},
-	{
-		"tcp", "no-such-name.google.com.:80",
-		"dial tcp no-such-name.google.com.:80: lookup no-such-name.google.com.( on .*)?: no (.*)",
-	},
-	{
-		"tcp", "no-such-name.no-such-top-level-domain.:80",
-		"dial tcp no-such-name.no-such-top-level-domain.:80: lookup no-such-name.no-such-top-level-domain.( on .*)?: no (.*)",
-	},
-	{
-		"tcp", "no-such-name:80",
-		`dial tcp no-such-name:80: lookup no-such-name\.(.*\.)?( on .*)?: no (.*)`,
-	},
-	{
-		"tcp", "mh/astro/r70:http",
-		"dial tcp mh/astro/r70:http: lookup mh/astro/r70: invalid domain name",
-	},
-	{
-		"unix", "/etc/file-not-found",
-		"dial unix /etc/file-not-found: no such file or directory",
-	},
-	{
-		"unix", "/etc/",
-		"dial unix /etc/: (permission denied|socket operation on non-socket|connection refused)",
-	},
-	{
-		"unixpacket", "/etc/file-not-found",
-		"dial unixpacket /etc/file-not-found: no such file or directory",
-	},
-	{
-		"unixpacket", "/etc/",
-		"dial unixpacket /etc/: (permission denied|socket operation on non-socket|connection refused)",
-	},
-}
-
-var duplicateErrorPattern = `dial (.*) dial (.*)`
-
-func TestDialError(t *testing.T) {
-	if !*runErrorTest {
-		t.Logf("test disabled; use -run_error_test to enable")
-		return
-	}
-	for i, tt := range dialErrorTests {
-		c, err := Dial(tt.Net, tt.Raddr)
-		if c != nil {
-			c.Close()
-		}
-		if err == nil {
-			t.Errorf("#%d: nil error, want match for %#q", i, tt.Pattern)
-			continue
-		}
-		s := err.Error()
-		match, _ := regexp.MatchString(tt.Pattern, s)
-		if !match {
-			t.Errorf("#%d: %q, want match for %#q", i, s, tt.Pattern)
-		}
-		match, _ = regexp.MatchString(duplicateErrorPattern, s)
-		if match {
-			t.Errorf("#%d: %q, duplicate error return from Dial", i, s)
-		}
-	}
-}
-
-var invalidDialAndListenArgTests = []struct {
-	net  string
-	addr string
-	err  error
-}{
-	{"foo", "bar", &OpError{Op: "dial", Net: "foo", Addr: nil, Err: UnknownNetworkError("foo")}},
-	{"baz", "", &OpError{Op: "listen", Net: "baz", Addr: nil, Err: UnknownNetworkError("baz")}},
-	{"tcp", "", &OpError{Op: "dial", Net: "tcp", Addr: nil, Err: errMissingAddress}},
-}
-
-func TestInvalidDialAndListenArgs(t *testing.T) {
-	for _, tt := range invalidDialAndListenArgTests {
-		var err error
-		switch tt.err.(*OpError).Op {
-		case "dial":
-			_, err = Dial(tt.net, tt.addr)
-		case "listen":
-			_, err = Listen(tt.net, tt.addr)
-		}
-		if !reflect.DeepEqual(tt.err, err) {
-			t.Fatalf("got %#v; expected %#v", err, tt.err)
 		}
 	}
 }
@@ -220,7 +155,7 @@ func TestDialerDualStackFDLeak(t *testing.T) {
 		t.Skipf("not implemented a way to cancel dial racers in TCP SYN-SENT state on %s", runtime.GOOS)
 	}
 	if !supportsIPv4 || !supportsIPv6 {
-		t.Skip("ipv4 or ipv6 is not supported")
+		t.Skip("both IPv4 and IPv6 are required")
 	}
 
 	origTestHookLookupIP := testHookLookupIP
@@ -277,7 +212,7 @@ func TestDialerLocalAddr(t *testing.T) {
 	handler := func(ls *localServer, ln Listener) {
 		c, err := ln.Accept()
 		if err != nil {
-			ch <- fmt.Errorf("Accept failed: %v", err)
+			ch <- err
 			return
 		}
 		defer c.Close()
@@ -294,13 +229,13 @@ func TestDialerLocalAddr(t *testing.T) {
 
 	laddr, err := ResolveTCPAddr(ls.Listener.Addr().Network(), ls.Listener.Addr().String())
 	if err != nil {
-		t.Fatalf("ResolveTCPAddr failed: %v", err)
+		t.Fatal(err)
 	}
 	laddr.Port = 0
 	d := &Dialer{LocalAddr: laddr}
 	c, err := d.Dial(ls.Listener.Addr().Network(), ls.Addr().String())
 	if err != nil {
-		t.Fatalf("Dial failed: %v", err)
+		t.Fatal(err)
 	}
 	defer c.Close()
 	c.Read(make([]byte, 1))
@@ -312,7 +247,7 @@ func TestDialerLocalAddr(t *testing.T) {
 
 func TestDialerDualStack(t *testing.T) {
 	if !supportsIPv4 || !supportsIPv6 {
-		t.Skip("ipv4 or ipv6 is not supported")
+		t.Skip("both IPv4 and IPv6 are required")
 	}
 
 	origTestHookLookupIP := testHookLookupIP
@@ -376,9 +311,7 @@ func TestDialerKeepAlive(t *testing.T) {
 	if err := ls.buildup(handler); err != nil {
 		t.Fatal(err)
 	}
-	defer func() {
-		testHookSetKeepAlive = func() {}
-	}()
+	defer func() { testHookSetKeepAlive = func() {} }()
 
 	for _, keepAlive := range []bool{false, true} {
 		got := false

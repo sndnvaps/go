@@ -143,16 +143,15 @@ func newosproc(mp *m, stk unsafe.Pointer) {
 	}
 }
 
-// Version of newosproc that doesn't require any Go structs to be allocated.
+// Version of newosproc that doesn't require a valid G.
 //go:nosplit
-func newosproc0(stacksize uintptr, fn unsafe.Pointer, fnarg unsafe.Pointer) {
-	var dummy uint64
-	stack := sysAlloc(stacksize, &dummy)
+func newosproc0(stacksize uintptr, fn unsafe.Pointer) {
+	stack := sysAlloc(stacksize, &memstats.stacks_sys)
 	if stack == nil {
 		write(2, unsafe.Pointer(&failallocatestack[0]), int32(len(failallocatestack)))
 		exit(1)
 	}
-	ret := clone0(cloneFlags, unsafe.Pointer(uintptr(stack)+stacksize), fn, fnarg)
+	ret := clone(cloneFlags, unsafe.Pointer(uintptr(stack)+stacksize), nil, nil, fn)
 	if ret < 0 {
 		write(2, unsafe.Pointer(&failthreadcreate[0]), int32(len(failthreadcreate)))
 		exit(1)
@@ -176,7 +175,7 @@ func getRandomData(r []byte) {
 	}
 	fd := open(&urandom_dev[0], 0 /* O_RDONLY */, 0)
 	n := read(fd, unsafe.Pointer(&r[0]), int32(len(r)))
-	close(fd)
+	closefd(fd)
 	extendRandom(r, int(n))
 }
 

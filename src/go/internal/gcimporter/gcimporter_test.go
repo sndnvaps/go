@@ -25,6 +25,7 @@ func skipSpecialPlatforms(t *testing.T) {
 	switch platform := runtime.GOOS + "-" + runtime.GOARCH; platform {
 	case "nacl-amd64p32",
 		"nacl-386",
+		"nacl-arm",
 		"darwin-arm",
 		"darwin-arm64":
 		t.Skipf("no compiled packages available for import on %s", platform)
@@ -129,7 +130,6 @@ var importedObjectTests = []struct {
 	name string
 	want string
 }{
-	{"unsafe.Pointer", "type Pointer unsafe.Pointer"},
 	{"math.Pi", "const Pi untyped float"},
 	{"io.Reader", "type Reader interface{Read(p []byte) (n int, err error)}"},
 	{"io.ReadWriter", "type ReadWriter interface{Read(p []byte) (n int, err error); Write(p []byte) (n int, err error)}"},

@@ -2460,11 +2460,6 @@ func vaddr(ctxt *obj.Link, p *obj.Prog, a *obj.Addr, r *obj.Reloc) int64 {
 		r.Off = -1 // caller must fill in
 		r.Sym = s
 		r.Add = a.Offset
-		if s.Type == obj.STLSBSS {
-			r.Xadd = r.Add - int64(r.Siz)
-			r.Type = obj.R_TLS
-			r.Xsym = s
-		}
 
 		return 0
 	}
@@ -2632,7 +2627,7 @@ func asmandsz(ctxt *obj.Link, p *obj.Prog, a *obj.Addr, r int, rex int, m64 int)
 	if REG_AX <= base && base <= REG_R15 {
 		if a.Index == REG_TLS && ctxt.Flag_shared == 0 {
 			rel = obj.Reloc{}
-			rel.Type = obj.R_TLS_IE
+			rel.Type = obj.R_TLS_LE
 			rel.Siz = 4
 			rel.Sym = nil
 			rel.Add = int64(v)
@@ -2990,7 +2985,7 @@ func doasm(ctxt *obj.Link, p *obj.Prog) {
 	f3t := int(p.F3t) * Ymax
 	tt := int(p.Tt) * Ymax
 
-	xo := bool2int(o.op[0] == 0x0f)
+	xo := obj.Bool2int(o.op[0] == 0x0f)
 	z := 0
 	var a *obj.Addr
 	var l int

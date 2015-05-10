@@ -68,6 +68,21 @@ type mstats struct {
 	// since then. heap_live <= heap_alloc, since heap_live
 	// excludes unmarked objects that have not yet been swept.
 	heap_live uint64
+
+	// heap_scan is the number of bytes of "scannable" heap. This
+	// is the live heap (as counted by heap_live), but omitting
+	// no-scan objects and no-scan tails of objects.
+	heap_scan uint64
+
+	// heap_marked is the number of bytes marked by the previous
+	// GC. After mark termination, heap_live == heap_marked, but
+	// unlike heap_live, heap_marked does not change until the
+	// next mark termination.
+	heap_marked uint64
+
+	// heap_reachable is an estimate of the reachable heap bytes
+	// at the end of the previous GC.
+	heap_reachable uint64
 }
 
 var memstats mstats
@@ -166,7 +181,7 @@ func readmemstats_m(stats *MemStats) {
 	memmove(unsafe.Pointer(stats), unsafe.Pointer(&memstats), sizeof_C_MStats)
 
 	// Stack numbers are part of the heap numbers, separate those out for user consumption
-	stats.StackSys = stats.StackInuse
+	stats.StackSys += stats.StackInuse
 	stats.HeapInuse -= stats.StackInuse
 	stats.HeapSys -= stats.StackInuse
 }
@@ -330,6 +345,8 @@ func purgecachedstats(c *mcache) {
 	if trace.enabled {
 		traceHeapAlloc()
 	}
+	memstats.heap_scan += uint64(c.local_scan)
+	c.local_scan = 0
 	memstats.tinyallocs += uint64(c.local_tinyallocs)
 	c.local_tinyallocs = 0
 	memstats.nlookup += uint64(c.local_nlookup)
@@ -341,5 +358,43 @@ func purgecachedstats(c *mcache) {
 	for i := 0; i < len(c.local_nsmallfree); i++ {
 		h.nsmallfree[i] += uint64(c.local_nsmallfree[i])
 		c.local_nsmallfree[i] = 0
+	}
+}
+
+// Atomically increases a given *system* memory stat.  We are counting on this
+// stat never overflowing a uintptr, so this function must only be used for
+// system memory stats.
+//
+// The current implementation for little endian architectures is based on
+// xadduintptr(), which is less than ideal: xadd64() should really be used.
+// Using xadduintptr() is a stop-gap solution until arm supports xadd64() that
+// doesn't use locks.  (Locks are a problem as they require a valid G, which
+// restricts their useability.)
+//
+// A side-effect of using xadduintptr() is that we need to check for
+// overflow errors.
+//go:nosplit
+func mSysStatInc(sysStat *uint64, n uintptr) {
+	if _BigEndian != 0 {
+		xadd64(sysStat, int64(n))
+		return
+	}
+	if val := xadduintptr((*uintptr)(unsafe.Pointer(sysStat)), n); val < n {
+		print("runtime: stat overflow: val ", val, ", n ", n, "\n")
+		exit(2)
+	}
+}
+
+// Atomically decreases a given *system* memory stat.  Same comments as
+// mSysStatInc apply.
+//go:nosplit
+func mSysStatDec(sysStat *uint64, n uintptr) {
+	if _BigEndian != 0 {
+		xadd64(sysStat, -int64(n))
+		return
+	}
+	if val := xadduintptr((*uintptr)(unsafe.Pointer(sysStat)), uintptr(-int64(n))); val+n < n {
+		print("runtime: stat underflow: val ", val, ", n ", n, "\n")
+		exit(2)
 	}
 }

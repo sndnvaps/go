@@ -12,6 +12,12 @@ func runtime_init()
 //go:linkname main_init main.init
 func main_init()
 
+// main_init_done is a signal used by cgocallbackg that initialization
+// has been completed. It is made before _cgo_notify_runtime_init_done,
+// so all cgo calls can rely on it existing. When main_init is complete,
+// it is closed, meaning cgocallbackg can reliably receive from it.
+var main_init_done chan bool
+
 //go:linkname main_main main.main
 func main_main()
 
@@ -66,10 +72,7 @@ func main() {
 
 	gcenable()
 
-	if islibrary {
-		// Allocate new M as main_main() is expected to block forever.
-		systemstack(newextram)
-	}
+	main_init_done = make(chan bool)
 	if iscgo {
 		if _cgo_thread_start == nil {
 			throw("_cgo_thread_start missing")
@@ -95,13 +98,14 @@ func main() {
 	}
 
 	main_init()
+	close(main_init_done)
 
 	needUnlock = false
 	unlockOSThread()
 
-	if isarchive {
-		// A program compiled with -buildmode=c-archive has a main,
-		// but it is not executed.
+	if isarchive || islibrary {
+		// A program compiled with -buildmode=c-archive or c-shared
+		// has a main, but it is not executed.
 		return
 	}
 	main_main()
@@ -204,7 +208,7 @@ func acquireSudog() *sudog {
 	// The acquirem/releasem increments m.locks during new(sudog),
 	// which keeps the garbage collector from being invoked.
 	mp := acquirem()
-	pp := mp.p
+	pp := mp.p.ptr()
 	if len(pp.sudogcache) == 0 {
 		lock(&sched.sudoglock)
 		// First, try to grab a batch from central cache.
@@ -253,7 +257,7 @@ func releaseSudog(s *sudog) {
 		throw("runtime: releaseSudog with non-nil gp.param")
 	}
 	mp := acquirem() // avoid rescheduling to another P
-	pp := mp.p
+	pp := mp.p.ptr()
 	if len(pp.sudogcache) == cap(pp.sudogcache) {
 		// Transfer half of local cache to the central cache.
 		var first, last *sudog
