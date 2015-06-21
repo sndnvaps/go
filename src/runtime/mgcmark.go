@@ -31,16 +31,17 @@ func gcscan_m() {
 
 	work.nwait = 0
 	work.ndone = 0
-	work.nproc = 1 // For now do not do this in parallel.
+	work.nproc = 1
+	useOneP := uint32(1) // For now do not do this in parallel.
 	//	ackgcphase is not needed since we are not scanning running goroutines.
-	parforsetup(work.markfor, work.nproc, uint32(_RootCount+local_allglen), false, markroot)
+	parforsetup(work.markfor, useOneP, uint32(_RootCount+local_allglen), false, markroot)
 	parfordo(work.markfor)
 
 	lock(&allglock)
 	// Check that gc work is done.
 	for i := 0; i < local_allglen; i++ {
 		gp := allgs[i]
-		if !gp.gcworkdone {
+		if !gp.gcscandone {
 			throw("scan missed a g")
 		}
 	}
@@ -130,35 +131,8 @@ func markroot(desc *parfor, i uint32) {
 			// non-STW phases.
 			shrinkstack(gp)
 		}
-		if readgstatus(gp) == _Gdead {
-			gp.gcworkdone = true
-		} else {
-			gp.gcworkdone = false
-		}
-		restart := stopg(gp)
 
-		// goroutine will scan its own stack when it stops running.
-		// Wait until it has.
-		for readgstatus(gp) == _Grunning && !gp.gcworkdone {
-		}
-
-		// scanstack(gp) is done as part of gcphasework
-		// But to make sure we finished we need to make sure that
-		// the stack traps have all responded so drop into
-		// this while loop until they respond.
-		for !gp.gcworkdone {
-			status = readgstatus(gp)
-			if status == _Gdead {
-				gp.gcworkdone = true // scan is a noop
-				break
-			}
-			if status == _Gwaiting || status == _Grunnable {
-				restart = stopg(gp)
-			}
-		}
-		if restart {
-			restartg(gp)
-		}
+		scang(gp)
 	}
 
 	gcw.dispose()
@@ -220,12 +194,24 @@ func gcAssistAlloc(size uintptr, allowAssist bool) {
 
 	// Perform assist work
 	systemstack(func() {
+		if atomicload(&gcBlackenEnabled) == 0 {
+			// The gcBlackenEnabled check in malloc races with the
+			// store that clears it but an atomic check in every malloc
+			// would be a performance hit.
+			// Instead we recheck it here on the non-preemptable system
+			// stack to determine if we should preform an assist.
+			return
+		}
 		// Track time spent in this assist. Since we're on the
 		// system stack, this is non-preemptible, so we can
 		// just measure start and end time.
 		startTime := nanotime()
 
-		xadd(&work.nwait, -1)
+		decnwait := xadd(&work.nwait, -1)
+		if decnwait == work.nproc {
+			println("runtime: work.nwait =", decnwait, "work.nproc=", work.nproc)
+			throw("nwait > work.nprocs")
+		}
 
 		// drain own cached work first in the hopes that it
 		// will be more cache friendly.
@@ -234,16 +220,33 @@ func gcAssistAlloc(size uintptr, allowAssist bool) {
 		gcDrainN(gcw, scanWork)
 		// Record that we did this much scan work.
 		gp.gcscanwork += gcw.scanWork - startScanWork
-		// No need to dispose since we're not in mark termination.
-
+		// If we are near the end of the mark phase
+		// dispose of the gcw.
+		if gcBlackenPromptly {
+			gcw.dispose()
+		}
 		// If this is the last worker and we ran out of work,
 		// signal a completion point.
-		if xadd(&work.nwait, +1) == work.nproc && work.full == 0 && work.partial == 0 {
-			// This has reached a background completion
-			// point.
-			gcBgMarkDone()
+		incnwait := xadd(&work.nwait, +1)
+		if incnwait > work.nproc {
+			println("runtime: work.nwait=", incnwait,
+				"work.nproc=", work.nproc,
+				"gcBlackenPromptly=", gcBlackenPromptly)
+			throw("work.nwait > work.nproc")
 		}
 
+		if incnwait == work.nproc && work.full == 0 && work.partial == 0 {
+			// This has reached a background completion
+			// point.
+			if gcBlackenPromptly {
+				if work.bgMark1.done == 0 {
+					throw("completing mark 2, but bgMark1.done == 0")
+				}
+				work.bgMark2.complete()
+			} else {
+				work.bgMark1.complete()
+			}
+		}
 		duration := nanotime() - startTime
 		_p_ := gp.m.p.ptr()
 		_p_.gcAssistTime += duration
@@ -254,32 +257,12 @@ func gcAssistAlloc(size uintptr, allowAssist bool) {
 	})
 }
 
-// The gp has been moved to a GC safepoint. GC phase specific
-// work is done here.
-//go:nowritebarrier
-func gcphasework(gp *g) {
-	switch gcphase {
-	default:
-		throw("gcphasework in bad gcphase")
-	case _GCoff, _GCquiesce, _GCstw, _GCsweep:
-		// No work.
-	case _GCscan:
-		// scan the stack, mark the objects, put pointers in work buffers
-		// hanging off the P where this is being run.
-		// Indicate that the scan is valid until the goroutine runs again
-		scanstack(gp)
-	case _GCmark:
-		// No work.
-	case _GCmarktermination:
-		scanstack(gp)
-		// All available mark work will be emptied before returning.
-	}
-	gp.gcworkdone = true
-}
-
 //go:nowritebarrier
 func scanstack(gp *g) {
 	if gp.gcscanvalid {
+		if gcphase == _GCmarktermination {
+			gcRemoveStackBarriers(gp)
+		}
 		return
 	}
 
@@ -309,11 +292,75 @@ func scanstack(gp *g) {
 		throw("can't scan gchelper stack")
 	}
 
+	var sp, barrierOffset, nextBarrier uintptr
+	if gp.syscallsp != 0 {
+		sp = gp.syscallsp
+	} else {
+		sp = gp.sched.sp
+	}
+	switch gcphase {
+	case _GCscan:
+		// Install stack barriers during stack scan.
+		barrierOffset = firstStackBarrierOffset
+		nextBarrier = sp + barrierOffset
+
+		if debug.gcstackbarrieroff > 0 {
+			nextBarrier = ^uintptr(0)
+		}
+
+		if gp.stkbarPos != 0 || len(gp.stkbar) != 0 {
+			// If this happens, it's probably because we
+			// scanned a stack twice in the same phase.
+			print("stkbarPos=", gp.stkbarPos, " len(stkbar)=", len(gp.stkbar), " goid=", gp.goid, " gcphase=", gcphase, "\n")
+			throw("g already has stack barriers")
+		}
+
+	case _GCmarktermination:
+		if int(gp.stkbarPos) == len(gp.stkbar) {
+			// gp hit all of the stack barriers (or there
+			// were none). Re-scan the whole stack.
+			nextBarrier = ^uintptr(0)
+		} else {
+			// Only re-scan up to the lowest un-hit
+			// barrier. Any frames above this have not
+			// executed since the _GCscan scan of gp and
+			// any writes through up-pointers to above
+			// this barrier had write barriers.
+			nextBarrier = gp.stkbar[gp.stkbarPos].savedLRPtr
+			if debugStackBarrier {
+				print("rescan below ", hex(nextBarrier), " in [", hex(sp), ",", hex(gp.stack.hi), ") goid=", gp.goid, "\n")
+			}
+		}
+
+		gcRemoveStackBarriers(gp)
+
+	default:
+		throw("scanstack in wrong phase")
+	}
+
 	gcw := &getg().m.p.ptr().gcw
+	n := 0
 	scanframe := func(frame *stkframe, unused unsafe.Pointer) bool {
-		// Pick up gcw as free variable so gentraceback and friends can
-		// keep the same signature.
 		scanframeworker(frame, unused, gcw)
+
+		if frame.fp > nextBarrier {
+			// We skip installing a barrier on bottom-most
+			// frame because on LR machines this LR is not
+			// on the stack.
+			if gcphase == _GCscan && n != 0 {
+				gcInstallStackBarrier(gp, frame)
+				barrierOffset *= 2
+				nextBarrier = sp + barrierOffset
+			} else if gcphase == _GCmarktermination {
+				// We just scanned a frame containing
+				// a return to a stack barrier. Since
+				// this frame never returned, we can
+				// stop scanning.
+				return false
+			}
+		}
+		n++
+
 		return true
 	}
 	gentraceback(^uintptr(0), ^uintptr(0), 0, gp, 0, nil, 0x7fffffff, scanframe, nil, 0)
@@ -397,6 +444,153 @@ func scanframeworker(frame *stkframe, unused unsafe.Pointer, gcw *gcWork) {
 		}
 		scanblock(frame.argp, uintptr(bv.n)*ptrSize, bv.bytedata, gcw)
 	}
+}
+
+// gcMaxStackBarriers returns the maximum number of stack barriers
+// that can be installed in a stack of stackSize bytes.
+func gcMaxStackBarriers(stackSize int) (n int) {
+	if firstStackBarrierOffset == 0 {
+		// Special debugging case for inserting stack barriers
+		// at every frame. Steal half of the stack for the
+		// []stkbar. Technically, if the stack were to consist
+		// solely of return PCs we would need two thirds of
+		// the stack, but stealing that much breaks things and
+		// this doesn't happen in practice.
+		return stackSize / 2 / int(unsafe.Sizeof(stkbar{}))
+	}
+
+	offset := firstStackBarrierOffset
+	for offset < stackSize {
+		n++
+		offset *= 2
+	}
+	return n + 1
+}
+
+// gcInstallStackBarrier installs a stack barrier over the return PC of frame.
+//go:nowritebarrier
+func gcInstallStackBarrier(gp *g, frame *stkframe) {
+	if frame.lr == 0 {
+		if debugStackBarrier {
+			print("not installing stack barrier with no LR, goid=", gp.goid, "\n")
+		}
+		return
+	}
+
+	// Save the return PC and overwrite it with stackBarrier.
+	var lrUintptr uintptr
+	if usesLR {
+		lrUintptr = frame.sp
+	} else {
+		lrUintptr = frame.fp - regSize
+	}
+	lrPtr := (*uintreg)(unsafe.Pointer(lrUintptr))
+	if debugStackBarrier {
+		print("install stack barrier at ", hex(lrUintptr), " over ", hex(*lrPtr), ", goid=", gp.goid, "\n")
+		if uintptr(*lrPtr) != frame.lr {
+			print("frame.lr=", hex(frame.lr))
+			throw("frame.lr differs from stack LR")
+		}
+	}
+
+	gp.stkbar = gp.stkbar[:len(gp.stkbar)+1]
+	stkbar := &gp.stkbar[len(gp.stkbar)-1]
+	stkbar.savedLRPtr = lrUintptr
+	stkbar.savedLRVal = uintptr(*lrPtr)
+	*lrPtr = uintreg(stackBarrierPC)
+}
+
+// gcRemoveStackBarriers removes all stack barriers installed in gp's stack.
+//go:nowritebarrier
+func gcRemoveStackBarriers(gp *g) {
+	if debugStackBarrier && gp.stkbarPos != 0 {
+		print("hit ", gp.stkbarPos, " stack barriers, goid=", gp.goid, "\n")
+	}
+
+	// Remove stack barriers that we didn't hit.
+	for _, stkbar := range gp.stkbar[gp.stkbarPos:] {
+		gcRemoveStackBarrier(gp, stkbar)
+	}
+
+	// Clear recorded stack barriers so copystack doesn't try to
+	// adjust them.
+	gp.stkbarPos = 0
+	gp.stkbar = gp.stkbar[:0]
+}
+
+// gcRemoveStackBarrier removes a single stack barrier. It is the
+// inverse operation of gcInstallStackBarrier.
+//
+// This is nosplit to ensure gp's stack does not move.
+//
+//go:nowritebarrier
+//go:nosplit
+func gcRemoveStackBarrier(gp *g, stkbar stkbar) {
+	if debugStackBarrier {
+		print("remove stack barrier at ", hex(stkbar.savedLRPtr), " with ", hex(stkbar.savedLRVal), ", goid=", gp.goid, "\n")
+	}
+	lrPtr := (*uintreg)(unsafe.Pointer(stkbar.savedLRPtr))
+	if val := *lrPtr; val != uintreg(stackBarrierPC) {
+		printlock()
+		print("at *", hex(stkbar.savedLRPtr), " expected stack barrier PC ", hex(stackBarrierPC), ", found ", hex(val), ", goid=", gp.goid, "\n")
+		print("gp.stkbar=")
+		gcPrintStkbars(gp.stkbar)
+		print(", gp.stkbarPos=", gp.stkbarPos, ", gp.stack=[", hex(gp.stack.lo), ",", hex(gp.stack.hi), ")\n")
+		throw("stack barrier lost")
+	}
+	*lrPtr = uintreg(stkbar.savedLRVal)
+}
+
+// gcPrintStkbars prints a []stkbar for debugging.
+func gcPrintStkbars(stkbar []stkbar) {
+	print("[")
+	for i, s := range stkbar {
+		if i > 0 {
+			print(" ")
+		}
+		print("*", hex(s.savedLRPtr), "=", hex(s.savedLRVal))
+	}
+	print("]")
+}
+
+// gcUnwindBarriers marks all stack barriers up the frame containing
+// sp as hit and removes them. This is used during stack unwinding for
+// panic/recover and by heapBitsBulkBarrier to force stack re-scanning
+// when its destination is on the stack.
+//
+// This is nosplit to ensure gp's stack does not move.
+//
+//go:nosplit
+func gcUnwindBarriers(gp *g, sp uintptr) {
+	// On LR machines, if there is a stack barrier on the return
+	// from the frame containing sp, this will mark it as hit even
+	// though it isn't, but it's okay to be conservative.
+	before := gp.stkbarPos
+	for int(gp.stkbarPos) < len(gp.stkbar) && gp.stkbar[gp.stkbarPos].savedLRPtr < sp {
+		gcRemoveStackBarrier(gp, gp.stkbar[gp.stkbarPos])
+		gp.stkbarPos++
+	}
+	if debugStackBarrier && gp.stkbarPos != before {
+		print("skip barriers below ", hex(sp), " in goid=", gp.goid, ": ")
+		gcPrintStkbars(gp.stkbar[before:gp.stkbarPos])
+		print("\n")
+	}
+}
+
+// nextBarrierPC returns the original return PC of the next stack barrier.
+// Used by getcallerpc, so it must be nosplit.
+//go:nosplit
+func nextBarrierPC() uintptr {
+	gp := getg()
+	return gp.stkbar[gp.stkbarPos].savedLRVal
+}
+
+// setNextBarrierPC sets the return PC of the next stack barrier.
+// Used by setcallerpc, so it must be nosplit.
+//go:nosplit
+func setNextBarrierPC(pc uintptr) {
+	gp := getg()
+	gp.stkbar[gp.stkbarPos].savedLRVal = pc
 }
 
 // TODO(austin): Can we consolidate the gcDrain* functions?
@@ -557,9 +751,6 @@ func scanblock(b0, n0 uintptr, ptrmask *uint8, gcw *gcWork) {
 				// Same work as in scanobject; see comments there.
 				obj := *(*uintptr)(unsafe.Pointer(b + i))
 				if obj != 0 && arena_start <= obj && obj < arena_used {
-					if mheap_.shadow_enabled && debug.wbshadow >= 2 && debug.gccheckmark > 0 && useCheckmark {
-						checkwbshadow((*uintptr)(unsafe.Pointer(b + i)))
-					}
 					if obj, hbits, span := heapBitsForObject(obj); obj != 0 {
 						greyobject(obj, b, i, hbits, span, gcw)
 					}
@@ -597,32 +788,25 @@ func scanobject(b uintptr, gcw *gcWork) {
 			// Avoid needless hbits.next() on last iteration.
 			hbits = hbits.next()
 		}
-		bits := uintptr(hbits.typeBits())
-		if bits == typeDead {
+		// During checkmarking, 1-word objects store the checkmark
+		// in the type bit for the one word. The only one-word objects
+		// are pointers, or else they'd be merged with other non-pointer
+		// data into larger allocations.
+		bits := hbits.bits()
+		if i >= 2*ptrSize && bits&bitMarked == 0 {
 			break // no more pointers in this object
 		}
-
-		if bits <= typeScalar { // typeScalar, typeDead, typeScalarMarked
-			continue
+		if bits&bitPointer == 0 {
+			continue // not a pointer
 		}
 
-		if bits&typePointer != typePointer {
-			print("gc useCheckmark=", useCheckmark, " b=", hex(b), "\n")
-			throw("unexpected garbage collection bits")
-		}
-
-		// Work here is duplicated in scanblock.
+		// Work here is duplicated in scanblock and above.
 		// If you make changes here, make changes there too.
-
 		obj := *(*uintptr)(unsafe.Pointer(b + i))
 
 		// At this point we have extracted the next potential pointer.
-		// Check if it points into heap.
-		if obj != 0 && arena_start <= obj && obj < arena_used {
-			if mheap_.shadow_enabled && debug.wbshadow >= 2 && debug.gccheckmark > 0 && useCheckmark {
-				checkwbshadow((*uintptr)(unsafe.Pointer(b + i)))
-			}
-
+		// Check if it points into heap and not back at the current object.
+		if obj != 0 && arena_start <= obj && obj < arena_used && obj-b >= n {
 			// Mark the object.
 			if obj, hbits, span := heapBitsForObject(obj); obj != 0 {
 				greyobject(obj, b, i, hbits, span, gcw)
@@ -641,7 +825,7 @@ func shade(b uintptr) {
 	if obj, hbits, span := heapBitsForObject(b); obj != 0 {
 		gcw := &getg().m.p.ptr().gcw
 		greyobject(obj, 0, 0, hbits, span, gcw)
-		if gcphase == _GCmarktermination {
+		if gcphase == _GCmarktermination || gcBlackenPromptly {
 			// Ps aren't allowed to cache work during mark
 			// termination.
 			gcw.dispose()
@@ -673,11 +857,11 @@ func greyobject(obj, base, off uintptr, hbits heapBits, span *mspan, gcw *gcWork
 
 			throw("checkmark found unmarked object")
 		}
-		if hbits.isCheckmarked() {
+		if hbits.isCheckmarked(span.elemsize) {
 			return
 		}
-		hbits.setCheckmarked()
-		if !hbits.isCheckmarked() {
+		hbits.setCheckmarked(span.elemsize)
+		if !hbits.isCheckmarked(span.elemsize) {
 			throw("setCheckmarked and isCheckmarked disagree")
 		}
 	} else {
@@ -685,12 +869,11 @@ func greyobject(obj, base, off uintptr, hbits heapBits, span *mspan, gcw *gcWork
 		if hbits.isMarked() {
 			return
 		}
-
 		hbits.setMarked()
 
 		// If this is a noscan object, fast-track it to black
 		// instead of greying it.
-		if hbits.typeBits() == typeDead {
+		if !hbits.hasPointers(span.elemsize) {
 			gcw.bytesMarked += uint64(span.elemsize)
 			return
 		}
@@ -732,16 +915,12 @@ func gcDumpObject(label string, obj, off uintptr) {
 	}
 }
 
-// When in GCmarkterminate phase we allocate black.
+// If gcBlackenPromptly is true we are in the second mark phase phase so we allocate black.
 //go:nowritebarrier
 func gcmarknewobject_m(obj, size uintptr) {
-	if gcphase != _GCmarktermination {
-		throw("marking new object while not in mark termination phase")
-	}
-	if useCheckmark { // The world should be stopped so this should not happen.
+	if useCheckmark && !gcBlackenPromptly { // The world should be stopped so this should not happen.
 		throw("gcmarknewobject called while doing checkmark")
 	}
-
 	heapBitsForAddr(obj).setMarked()
 	xadd64(&work.bytesMarked, int64(size))
 }
@@ -752,7 +931,7 @@ func gcmarknewobject_m(obj, size uintptr) {
 // stopped ensuring that any object encountered has their normal
 // mark bit set. To do this we use an orthogonal bit
 // pattern to indicate the object is marked. The following pattern
-// uses the upper two bits in the object's bounday nibble.
+// uses the upper two bits in the object's boundary nibble.
 // 01: scalar  not marked
 // 10: pointer not marked
 // 11: pointer     marked

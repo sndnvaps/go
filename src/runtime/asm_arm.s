@@ -259,7 +259,6 @@ noswitch:
 
 // Called during function prolog when more stack is needed.
 // R1 frame size
-// R2 arg size
 // R3 prolog's LR
 // NB. we do not save R0 because we've forced 5c to pass all arguments
 // on the stack.
@@ -308,6 +307,23 @@ TEXT runtime·morestack(SB),NOSPLIT,$-4-0
 TEXT runtime·morestack_noctxt(SB),NOSPLIT,$-4-0
 	MOVW	$0, R7
 	B runtime·morestack(SB)
+
+TEXT runtime·stackBarrier(SB),NOSPLIT,$0
+	// We came here via a RET to an overwritten LR.
+	// R0 may be live. Other registers are available.
+
+	// Get the original return PC, g.stkbar[g.stkbarPos].savedLRVal.
+	MOVW	(g_stkbar+slice_array)(g), R4
+	MOVW	g_stkbarPos(g), R5
+	MOVW	$stkbar__size, R6
+	MUL	R5, R6
+	ADD	R4, R6
+	MOVW	stkbar_savedLRVal(R6), R6
+	// Record that this stack barrier was hit.
+	ADD	$1, R5
+	MOVW	R5, g_stkbarPos(g)
+	// Jump to the original return PC.
+	B	(R6)
 
 // reflectcall: call a function with the given argument list
 // func call(argtype *_type, f *FuncVal, arg *byte, argsize, retoffset uint32).
@@ -458,25 +474,14 @@ TEXT gosave<>(SB),NOSPLIT,$0
 	MOVW	R11, (g_sched+gobuf_ctxt)(g)
 	RET
 
-// asmcgocall(void(*fn)(void*), void *arg)
+// func asmcgocall(fn, arg unsafe.Pointer) int32
 // Call fn(arg) on the scheduler stack,
 // aligned appropriately for the gcc ABI.
-// See cgocall.c for more details.
-TEXT	·asmcgocall(SB),NOSPLIT,$0-8
+// See cgocall.go for more details.
+TEXT ·asmcgocall(SB),NOSPLIT,$0-12
 	MOVW	fn+0(FP), R1
 	MOVW	arg+4(FP), R0
-	BL	asmcgocall<>(SB)
-	RET
 
-TEXT ·asmcgocall_errno(SB),NOSPLIT,$0-12
-	MOVW	fn+0(FP), R1
-	MOVW	arg+4(FP), R0
-	BL	asmcgocall<>(SB)
-	MOVW	R0, ret+8(FP)
-	RET
-
-TEXT asmcgocall<>(SB),NOSPLIT,$0-0
-	// fn in R1, arg in R0.
 	MOVW	R13, R2
 	MOVW	g, R4
 
@@ -513,6 +518,8 @@ g0:
 	SUB	R2, R1
 	MOVW	R5, R0
 	MOVW	R1, R13
+
+	MOVW	R0, ret+8(FP)
 	RET
 
 // cgocallback(void (*fn)(void*), void *frame, uintptr framesize)
@@ -530,7 +537,7 @@ TEXT runtime·cgocallback(SB),NOSPLIT,$12-12
 	RET
 
 // cgocallback_gofunc(void (*fn)(void*), void *frame, uintptr framesize)
-// See cgocall.c for more details.
+// See cgocall.go for more details.
 TEXT	·cgocallback_gofunc(SB),NOSPLIT,$8-12
 	NO_LOCAL_POINTERS
 	
@@ -645,14 +652,30 @@ TEXT setg<>(SB),NOSPLIT,$-4-0
 	MOVW	g, R0
 	RET
 
-TEXT runtime·getcallerpc(SB),NOSPLIT,$-4-8
-	MOVW	0(R13), R0
+TEXT runtime·getcallerpc(SB),NOSPLIT,$4-8
+	MOVW	8(R13), R0		// LR saved by caller
+	MOVW	runtime·stackBarrierPC(SB), R1
+	CMP	R0, R1
+	BNE	nobar
+	// Get original return PC.
+	BL	runtime·nextBarrierPC(SB)
+	MOVW	4(R13), R0
+nobar:
 	MOVW	R0, ret+4(FP)
 	RET
 
-TEXT runtime·setcallerpc(SB),NOSPLIT,$-4-8
+TEXT runtime·setcallerpc(SB),NOSPLIT,$4-8
 	MOVW	pc+4(FP), R0
-	MOVW	R0, 0(R13)
+	MOVW	8(R13), R1
+	MOVW	runtime·stackBarrierPC(SB), R2
+	CMP	R1, R2
+	BEQ	setbar
+	MOVW	R0, 8(R13)		// set LR in caller
+	RET
+setbar:
+	// Set the stack barrier return PC.
+	MOVW	R0, 4(R13)
+	BL	runtime·setNextBarrierPC(SB)
 	RET
 
 TEXT runtime·getcallersp(SB),NOSPLIT,$-4-8
@@ -712,6 +735,17 @@ TEXT runtime·atomicloaduint(SB),NOSPLIT,$0-8
 
 TEXT runtime·atomicstoreuintptr(SB),NOSPLIT,$0-8
 	B	runtime·atomicstore(SB)
+
+// armPublicationBarrier is a native store/store barrier for ARMv7+.
+// To implement publiationBarrier in sys_$GOOS_arm.s using the native
+// instructions, use:
+//
+//	TEXT ·publicationBarrier(SB),NOSPLIT,$-4-0
+//		B	runtime·armPublicationBarrier(SB)
+//
+TEXT runtime·armPublicationBarrier(SB),NOSPLIT,$-4-0
+	WORD $0xf57ff05e	// DMB ST
+	RET
 
 // AES hashing not implemented for ARM
 TEXT runtime·aeshash(SB),NOSPLIT,$-4-0

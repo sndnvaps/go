@@ -18,14 +18,14 @@ import (
 	"strings"
 	"text/scanner"
 
-	exact "go/constants"
+	exact "go/constant"
 	"go/types"
 )
 
 // debugging/development support
 const debug = false
 
-var pkgExts = [...]string{".a", ".5", ".6", ".7", ".8", ".9"}
+var pkgExts = [...]string{".a", ".o"}
 
 // FindPkg returns the filename and unique package id for an import
 // path based on package information provided by build.Import (using
@@ -568,7 +568,7 @@ func (p *parser) parseSignature(recv *types.Var) *types.Signature {
 		}
 	}
 
-	return types.NewSignature(nil, recv, types.NewTuple(params...), types.NewTuple(results...), isVariadic)
+	return types.NewSignature(recv, types.NewTuple(params...), types.NewTuple(results...), isVariadic)
 }
 
 // InterfaceType = "interface" "{" [ MethodList ] "}" .

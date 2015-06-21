@@ -213,7 +213,7 @@ func (d *decoder) flush() {
 	d.o = 0
 }
 
-var errClosed = errors.New("compress/lzw: reader/writer is closed")
+var errClosed = errors.New("lzw: reader/writer is closed")
 
 func (d *decoder) Close() error {
 	d.err = errClosed // in case any Reads come along
@@ -227,7 +227,8 @@ func (d *decoder) Close() error {
 // It is the caller's responsibility to call Close on the ReadCloser when
 // finished reading.
 // The number of bits to use for literal codes, litWidth, must be in the
-// range [2,8] and is typically 8.
+// range [2,8] and is typically 8. It must equal the litWidth
+// used during compression.
 func NewReader(r io.Reader, order Order, litWidth int) io.ReadCloser {
 	d := new(decoder)
 	switch order {

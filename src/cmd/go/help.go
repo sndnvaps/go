@@ -11,7 +11,7 @@ var helpC = &Command{
 There are two different ways to call between Go and C/C++ code.
 
 The first is the cgo tool, which is part of the Go distribution.  For
-information on how to use it see the cgo documentation (godoc cmd/cgo).
+information on how to use it see the cgo documentation (go doc cmd/cgo).
 
 The second is the SWIG program, which is a general tool for
 interfacing between languages.  For information on SWIG see
@@ -47,7 +47,7 @@ environment variable (see 'go help gopath').
 If no import paths are given, the action applies to the
 package in the current directory.
 
-There are three reserved names for paths that should not be used
+There are four reserved names for paths that should not be used
 for packages to be built with the go tool:
 
 - "main" denotes the top-level package in a stand-alone executable.
@@ -321,6 +321,8 @@ Here's an example directory layout:
 Go searches each directory listed in GOPATH to find source code,
 but new packages are always downloaded into the first directory
 in the list.
+
+See https://golang.org/doc/code.html for an example.
 	`,
 }
 

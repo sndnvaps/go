@@ -307,6 +307,23 @@ TEXT runtime·morestack_noctxt(SB),NOSPLIT,$-4-0
 	MOVW	$0, R26
 	B runtime·morestack(SB)
 
+TEXT runtime·stackBarrier(SB),NOSPLIT,$0
+	// We came here via a RET to an overwritten LR.
+	// R0 may be live (see return0). Other registers are available.
+
+	// Get the original return PC, g.stkbar[g.stkbarPos].savedLRVal.
+	MOVD	(g_stkbar+slice_array)(g), R4
+	MOVD	g_stkbarPos(g), R5
+	MOVD	$stkbar__size, R6
+	MUL	R5, R6
+	ADD	R4, R6
+	MOVD	stkbar_savedLRVal(R6), R6
+	// Record that this stack barrier was hit.
+	ADD	$1, R5
+	MOVD	R5, g_stkbarPos(g)
+	// Jump to the original return PC.
+	B	(R6)
+
 // reflectcall: call a function with the given argument list
 // func call(argtype *_type, f *FuncVal, arg *byte, argsize, retoffset uint32).
 // we don't have variable-sized frames, so we use a small number
@@ -528,25 +545,14 @@ TEXT gosave<>(SB),NOSPLIT,$-8
 	MOVD	$0, (g_sched+gobuf_ctxt)(g)
 	RET
 
-// asmcgocall(void(*fn)(void*), void *arg)
+// func asmcgocall(fn, arg unsafe.Pointer) int32
 // Call fn(arg) on the scheduler stack,
 // aligned appropriately for the gcc ABI.
 // See cgocall.go for more details.
-TEXT ·asmcgocall(SB),NOSPLIT,$0-16
+TEXT ·asmcgocall(SB),NOSPLIT,$0-20
 	MOVD	fn+0(FP), R1
 	MOVD	arg+8(FP), R0
-	BL	asmcgocall<>(SB)
-	RET
 
-TEXT ·asmcgocall_errno(SB),NOSPLIT,$0-20
-	MOVD	fn+0(FP), R1
-	MOVD	arg+8(FP), R0
-	BL	asmcgocall<>(SB)
-	MOVW	R0, ret+16(FP)
-	RET
-
-// asmcgocall common code. fn in R1, arg in R0. returns errno in R0.
-TEXT asmcgocall<>(SB),NOSPLIT,$0-0
 	MOVD	RSP, R2		// save original stack pointer
 	MOVD	g, R4
 
@@ -587,6 +593,8 @@ g0:
 	SUB	R6, R5
 	MOVD	R9, R0
 	MOVD	R5, RSP
+
+	MOVW	R0, ret+16(FP)
 	RET
 
 // cgocallback(void (*fn)(void*), void *frame, uintptr framesize)
@@ -743,14 +751,30 @@ TEXT setg_gcc<>(SB),NOSPLIT,$8
 	MOVD	savedR27-8(SP), R27
 	RET
 
-TEXT runtime·getcallerpc(SB),NOSPLIT,$-8-16
-	MOVD	0(RSP), R0
+TEXT runtime·getcallerpc(SB),NOSPLIT,$8-16
+	MOVD	16(RSP), R0		// LR saved by caller
+	MOVD	runtime·stackBarrierPC(SB), R1
+	CMP	R0, R1
+	BNE	nobar
+	// Get original return PC.
+	BL	runtime·nextBarrierPC(SB)
+	MOVD	8(RSP), R0
+nobar:
 	MOVD	R0, ret+8(FP)
 	RET
 
-TEXT runtime·setcallerpc(SB),NOSPLIT,$-8-16
+TEXT runtime·setcallerpc(SB),NOSPLIT,$8-16
 	MOVD	pc+8(FP), R0
-	MOVD	R0, 0(RSP)		// set calling pc
+	MOVD	16(RSP), R1
+	MOVD	runtime·stackBarrierPC(SB), R2
+	CMP	R1, R2
+	BEQ	setbar
+	MOVD	R0, 16(RSP)		// set LR in caller
+	RET
+setbar:
+	// Set the stack barrier return PC.
+	MOVD	R0, 8(RSP)
+	BL	runtime·setNextBarrierPC(SB)
 	RET
 
 TEXT runtime·getcallersp(SB),NOSPLIT,$0-16

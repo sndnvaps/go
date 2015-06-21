@@ -531,6 +531,20 @@ var execTests = []execTest{
 	{"bug14a", "{{(nil).True}}", "", tVal, false},
 	{"bug14b", "{{$x := nil}}{{$x.anything}}", "", tVal, false},
 	{"bug14c", `{{$x := (1.0)}}{{$y := ("hello")}}{{$x.anything}}{{$y.true}}`, "", tVal, false},
+	// Didn't call validateType on function results. Issue 10800.
+	{"bug15", "{{valueString returnInt}}", "", tVal, false},
+	// Variadic function corner cases. Issue 10946.
+	{"bug16a", "{{true|printf}}", "", tVal, false},
+	{"bug16b", "{{1|printf}}", "", tVal, false},
+	{"bug16c", "{{1.1|printf}}", "", tVal, false},
+	{"bug16d", "{{'x'|printf}}", "", tVal, false},
+	{"bug16e", "{{0i|printf}}", "", tVal, false},
+	{"bug16f", "{{true|twoArgs \"xxx\"}}", "", tVal, false},
+	{"bug16g", "{{\"aaa\" |twoArgs \"bbb\"}}", "twoArgs=bbbaaa", tVal, true},
+	{"bug16h", "{{1|oneArg}}", "", tVal, false},
+	{"bug16i", "{{\"aaa\"|oneArg}}", "oneArg=aaa", tVal, true},
+	{"bug16j", "{{1+2i|printf \"%v\"}}", "(1+2i)", tVal, true},
+	{"bug16k", "{{\"aaa\"|printf }}", "aaa", tVal, true},
 }
 
 func zeroArgs() string {
@@ -539,6 +553,10 @@ func zeroArgs() string {
 
 func oneArg(a string) string {
 	return "oneArg=" + a
+}
+
+func twoArgs(a, b string) string {
+	return "twoArgs=" + a + b
 }
 
 func dddArg(a int, b ...string) string {
@@ -568,6 +586,11 @@ func vfunc(V, *V) string {
 // valueString takes a string, not a pointer.
 func valueString(v string) string {
 	return "value is ignored"
+}
+
+// returnInt returns an int
+func returnInt() int {
+	return 7
 }
 
 func add(args ...int) int {
@@ -611,7 +634,9 @@ func testExecute(execTests []execTest, template *Template, t *testing.T) {
 		"makemap":     makemap,
 		"mapOfThree":  mapOfThree,
 		"oneArg":      oneArg,
+		"returnInt":   returnInt,
 		"stringer":    stringer,
+		"twoArgs":     twoArgs,
 		"typeOf":      typeOf,
 		"valueString": valueString,
 		"vfunc":       vfunc,

@@ -107,7 +107,7 @@ The 'go test' command takes both flags that apply to 'go test' itself
 and flags that apply to the resulting test binary.
 
 Several of the flags control profiling and write an execution profile
-suitable for "go tool pprof"; run "go tool pprof help" for more
+suitable for "go tool pprof"; run "go tool pprof -h" for more
 information.  The --alloc_space, --alloc_objects, and --show_bytes
 options of pprof control how the information is presented.
 
@@ -135,11 +135,16 @@ control the execution of any test:
 	-blockprofilerate n
 	    Control the detail provided in goroutine blocking profiles by
 	    calling runtime.SetBlockProfileRate with n.
-	    See 'godoc runtime SetBlockProfileRate'.
+	    See 'go doc runtime.SetBlockProfileRate'.
 	    The profiler aims to sample, on average, one blocking event every
 	    n nanoseconds the program spends blocked.  By default,
 	    if -test.blockprofile is set without this flag, all blocking events
 	    are recorded, equivalent to -test.blockprofilerate=1.
+
+	-count n
+	    Run each test and benchmark n times (default 1).
+	    If -cpu is set, run n times for each GOMAXPROCS value.
+	    Examples are always run once.
 
 	-cover
 	    Enable coverage analysis.
@@ -180,7 +185,7 @@ control the execution of any test:
 
 	-memprofilerate n
 	    Enable more precise (and expensive) memory profiles by setting
-	    runtime.MemProfileRate.  See 'godoc runtime MemProfileRate'.
+	    runtime.MemProfileRate.  See 'go doc runtime.MemProfileRate'.
 	    To profile all memory allocations, use -test.memprofilerate=1
 	    and pass --alloc_space flag to the pprof tool.
 
@@ -568,8 +573,8 @@ func (b *builder) test(p *Package) (buildAction, runAction, printAction *action,
 	var imports, ximports []*Package
 	var stk importStack
 	stk.push(p.ImportPath + " (test)")
-	for _, path := range p.TestImports {
-		p1 := loadImport(path, p.Dir, &stk, p.build.TestImportPos[path])
+	for i, path := range p.TestImports {
+		p1 := loadImport(path, p.Dir, p, &stk, p.build.TestImportPos[path])
 		if p1.Error != nil {
 			return nil, nil, nil, p1.Error
 		}
@@ -584,21 +589,23 @@ func (b *builder) test(p *Package) (buildAction, runAction, printAction *action,
 			}
 			return nil, nil, nil, err
 		}
+		p.TestImports[i] = p1.ImportPath
 		imports = append(imports, p1)
 	}
 	stk.pop()
 	stk.push(p.ImportPath + "_test")
 	pxtestNeedsPtest := false
-	for _, path := range p.XTestImports {
+	for i, path := range p.XTestImports {
 		if path == p.ImportPath {
 			pxtestNeedsPtest = true
 			continue
 		}
-		p1 := loadImport(path, p.Dir, &stk, p.build.XTestImportPos[path])
+		p1 := loadImport(path, p.Dir, p, &stk, p.build.XTestImportPos[path])
 		if p1.Error != nil {
 			return nil, nil, nil, p1.Error
 		}
 		ximports = append(ximports, p1)
+		p.XTestImports[i] = p1.ImportPath
 	}
 	stk.pop()
 
@@ -723,7 +730,7 @@ func (b *builder) test(p *Package) (buildAction, runAction, printAction *action,
 		if dep == ptest.ImportPath {
 			pmain.imports = append(pmain.imports, ptest)
 		} else {
-			p1 := loadImport(dep, "", &stk, nil)
+			p1 := loadImport(dep, "", nil, &stk, nil)
 			if p1.Error != nil {
 				return nil, nil, nil, p1.Error
 			}

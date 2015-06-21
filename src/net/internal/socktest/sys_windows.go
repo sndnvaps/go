@@ -8,6 +8,8 @@ import "syscall"
 
 // Socket wraps syscall.Socket.
 func (sw *Switch) Socket(family, sotype, proto int) (s syscall.Handle, err error) {
+	sw.once.Do(sw.init)
+
 	so := &Status{Cookie: cookie(family, sotype, proto)}
 	sw.fmu.RLock()
 	f, _ := sw.fltab[FilterSocket]
@@ -66,7 +68,7 @@ func (sw *Switch) Closesocket(s syscall.Handle) (err error) {
 	return nil
 }
 
-// Conenct wraps syscall.Connect.
+// Connect wraps syscall.Connect.
 func (sw *Switch) Connect(s syscall.Handle, sa syscall.Sockaddr) (err error) {
 	so := sw.sockso(s)
 	if so == nil {
@@ -95,7 +97,7 @@ func (sw *Switch) Connect(s syscall.Handle, sa syscall.Sockaddr) (err error) {
 	return nil
 }
 
-// ConenctEx wraps syscall.ConnectEx.
+// ConnectEx wraps syscall.ConnectEx.
 func (sw *Switch) ConnectEx(s syscall.Handle, sa syscall.Sockaddr, b *byte, n uint32, nwr *uint32, o *syscall.Overlapped) (err error) {
 	so := sw.sockso(s)
 	if so == nil {

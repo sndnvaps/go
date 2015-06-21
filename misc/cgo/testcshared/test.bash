@@ -15,6 +15,14 @@ if [ ! -f src/libgo/libgo.go ]; then
 fi
 
 goos=$(go env GOOS)
+goarch=$(go env GOARCH)
+
+# Directory where cgo headers and outputs will be installed.
+# The installation directory format varies depending on the platform.
+installdir=pkg/${goos}_${goarch}_testcshared_shared
+if [ "${goos}/${goarch}" == "android/arm" ] || [ "${goos}/${goarch}" == "darwin/amd64" ]; then
+	installdir=pkg/${goos}_${goarch}_testcshared
+fi
 
 # Temporary directory on the android device.
 androidpath=/data/local/tmp/testcshared-$$
@@ -22,9 +30,9 @@ androidpath=/data/local/tmp/testcshared-$$
 function cleanup() {
 	rm -rf libgo.so libgo2.so libgo.h testp testp2 testp3 pkg
 
-	rm -rf $(go env GOROOT)/pkg/$(go env GOOS)_$(go env GOARCH)_testcshared_shared
+	rm -rf $(go env GOROOT)/${installdir}
 
-	if [ "$(go env GOOS)" == "android" ]; then
+	if [ "$goos" == "android" ]; then
 		adb shell rm -rf $androidpath
 	fi
 }
@@ -38,11 +46,8 @@ function run() {
 	case "$goos" in
 	"android")
 		local args=$@
-		for ((i=0; i < ${#args}; i++)); do
-			args[$i]=${args[$i]//.\//${androidpath}\/}
-			args[$i]=${args[$i]//=./=${androidpath}}
-		done
-		output=$(adb shell ${args} | tr -d '\r')
+		output=$(adb shell "cd ${androidpath}; $@")
+		output=$(echo $output|tr -d '\r')
 		case $output in
 			*PASS) echo "PASS";; 
 			*) echo "$output";;
@@ -65,35 +70,45 @@ rm -rf pkg
 
 suffix="-installsuffix testcshared"
 
+libext="so"
+if [ "$goos" == "darwin" ]; then
+	libext="dylib"
+fi
+
 # Create the header files.
 GOPATH=$(pwd) go install -buildmode=c-shared $suffix libgo
 
-GOPATH=$(pwd) go build -buildmode=c-shared $suffix -o libgo.so src/libgo/libgo.go
-binpush libgo.so
+GOPATH=$(pwd) go build -buildmode=c-shared $suffix -o libgo.$libext src/libgo/libgo.go
+binpush libgo.$libext
 
 # test0: exported symbols in shared lib are accessible.
 # TODO(iant): using _shared here shouldn't really be necessary.
-$(go env CC) $(go env GOGCCFLAGS) -I pkg/$(go env GOOS)_$(go env GOARCH)_testcshared_shared -o testp main0.c libgo.so
+$(go env CC) $(go env GOGCCFLAGS) -I ${installdir} -o testp main0.c libgo.$libext
 binpush testp
+
 output=$(run LD_LIBRARY_PATH=. ./testp)
 if [ "$output" != "PASS" ]; then
 	echo "FAIL test0 got ${output}"
 	exit 1
 fi
 
-# test1: .so can be dynamically loaded and exported symbols are accessible.
+# test1: shared library can be dynamically loaded and exported symbols are accessible.
 $(go env CC) $(go env GOGCCFLAGS) -o testp main1.c -ldl
 binpush testp
-output=$(run ./testp ./libgo.so)
+output=$(run ./testp ./libgo.$libext)
 if [ "$output" != "PASS" ]; then
 	echo "FAIL test1 got ${output}"
 	exit 1
 fi
 
-# test2: tests libgo2.so which does not export any functions.
-GOPATH=$(pwd) go build -buildmode=c-shared $suffix -o libgo2.so src/libgo2/libgo2.go
-binpush libgo2.so
-$(go env CC) $(go env GOGCCFLAGS) -o testp2 main2.c -Wl,--no-as-needed libgo2.so
+# test2: tests libgo2 which does not export any functions.
+GOPATH=$(pwd) go build -buildmode=c-shared $suffix -o libgo2.$libext src/libgo2/libgo2.go
+binpush libgo2.$libext
+linkflags="-Wl,--no-as-needed"
+if [ "$goos" == "darwin" ]; then
+	linkflags=""
+fi
+$(go env CC) $(go env GOGCCFLAGS) -o testp2 main2.c $linkflags libgo2.$libext
 binpush testp2
 output=$(run LD_LIBRARY_PATH=. ./testp2)
 if [ "$output" != "PASS" ]; then

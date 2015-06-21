@@ -134,7 +134,6 @@ func (t *Template) Execute(wr io.Writer, data interface{}) (err error) {
 		wr:   wr,
 		vars: []variable{{"$", value}},
 	}
-	t.init()
 	if t.Tree == nil || t.Root == nil {
 		state.errorf("%q is an incomplete or empty template%s", t.Name(), t.DefinedTemplates())
 	}
@@ -147,9 +146,6 @@ func (t *Template) Execute(wr io.Writer, data interface{}) (err error) {
 // it returns the empty string. For generating an error message here
 // and in html/template.
 func (t *Template) DefinedTemplates() string {
-	if t.common == nil {
-		return ""
-	}
 	var b bytes.Buffer
 	for name, tmpl := range t.tmpl {
 		if tmpl.Tree == nil || tmpl.Root == nil {
@@ -585,7 +581,15 @@ func (s *state) evalCall(dot, fun reflect.Value, node parse.Node, name string, a
 	if final.IsValid() {
 		t := typ.In(typ.NumIn() - 1)
 		if typ.IsVariadic() {
-			t = t.Elem()
+			if numIn-1 < numFixed {
+				// The added final argument corresponds to a fixed parameter of the function.
+				// Validate against the type of the actual parameter.
+				t = typ.In(numIn - 1)
+			} else {
+				// The added final argument corresponds to the variadic part.
+				// Validate against the type of the elements of the variadic slice.
+				t = t.Elem()
+			}
 		}
 		argv[i] = s.validateType(final, t)
 	}
@@ -660,7 +664,7 @@ func (s *state) evalArg(dot reflect.Value, typ reflect.Type, n parse.Node) refle
 	case *parse.PipeNode:
 		return s.validateType(s.evalPipeline(dot, arg), typ)
 	case *parse.IdentifierNode:
-		return s.evalFunction(dot, arg, arg, nil, zero)
+		return s.validateType(s.evalFunction(dot, arg, arg, nil, zero), typ)
 	case *parse.ChainNode:
 		return s.validateType(s.evalChainNode(dot, arg, nil, zero), typ)
 	}

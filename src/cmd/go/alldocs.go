@@ -106,7 +106,7 @@ and test commands:
 	-gccgoflags 'arg list'
 		arguments to pass on each gccgo compiler/linker invocation.
 	-gcflags 'arg list'
-		arguments to pass on each 5g, 6g, 8g, or 9g compiler invocation.
+		arguments to pass on each go tool compile invocation.
 	-installsuffix suffix
 		a suffix to use in the name of the package installation directory,
 		in order to keep output separate from default builds.
@@ -114,9 +114,9 @@ and test commands:
 		or, if set explicitly, has _race appended to it.  Using a -buildmode
 		option that requires non-default compile flags has a similar effect.
 	-ldflags 'flag list'
-		arguments to pass on each 5l, 6l, 8l, or 9l linker invocation.
+		arguments to pass on each go tool link invocation.
 	-asmflags 'flag list'
-		arguments to pass on each asm assembler invocation.
+		arguments to pass on each go tool asm invocation.
 	-tags 'tag list'
 		a list of build tags to consider satisfied during the build.
 		For more information about build tags, see the description of
@@ -287,7 +287,7 @@ Usage:
 
 Fix runs the Go fix command on the packages named by the import paths.
 
-For more about fix, see 'godoc fix'.
+For more about fix, see 'go doc cmd/fix'.
 For more about specifying packages, see 'go help packages'.
 
 To run fix with specific options, run 'go tool fix'.
@@ -304,7 +304,7 @@ Usage:
 Fmt runs the command 'gofmt -l -w' on the packages named
 by the import paths.  It prints the names of the files that are modified.
 
-For more about gofmt, see 'godoc gofmt'.
+For more about gofmt, see 'go doc cmd/gofmt'.
 For more about specifying packages, see 'go help packages'.
 
 The -n flag prints commands that would be executed.
@@ -503,6 +503,7 @@ syntax of package template.  The default output is equivalent to -f
         Name          string // package name
         Doc           string // package documentation string
         Target        string // install path
+        Shlib         string // the shared library that contains this package (only set when -linkshared)
         Goroot        bool   // is this package in the Go root?
         Standard      bool   // is this package part of the standard Go library?
         Stale         bool   // would 'go install' do anything for this package?
@@ -698,17 +699,19 @@ Run go tool vet on packages
 
 Usage:
 
-	go vet [-n] [-x] [packages]
+	go vet [-n] [-x] [build flags] [packages]
 
 Vet runs the Go vet command on the packages named by the import paths.
 
-For more about vet, see 'godoc golang.org/x/tools/cmd/vet'.
+For more about vet, see 'go doc cmd/vet'.
 For more about specifying packages, see 'go help packages'.
 
 To run the vet tool with specific options, run 'go tool vet'.
 
 The -n flag prints commands that would be executed.
 The -x flag prints commands as they are executed.
+
+For more about build flags, see 'go help build'.
 
 See also: go fmt, go fix.
 
@@ -718,7 +721,7 @@ Calling between Go and C
 There are two different ways to call between Go and C/C++ code.
 
 The first is the cgo tool, which is part of the Go distribution.  For
-information on how to use it see the cgo documentation (godoc cmd/cgo).
+information on how to use it see the cgo documentation (go doc cmd/cgo).
 
 The second is the SWIG program, which is a general tool for
 interfacing between languages.  For information on SWIG see
@@ -864,6 +867,8 @@ Here's an example directory layout:
 Go searches each directory listed in GOPATH to find source code,
 but new packages are always downloaded into the first directory
 in the list.
+
+See https://golang.org/doc/code.html for an example.
 
 
 Import path syntax
@@ -1053,7 +1058,7 @@ environment variable (see 'go help gopath').
 If no import paths are given, the action applies to the
 package in the current directory.
 
-There are three reserved names for paths that should not be used
+There are four reserved names for paths that should not be used
 for packages to be built with the go tool:
 
 - "main" denotes the top-level package in a stand-alone executable.
@@ -1100,7 +1105,7 @@ The 'go test' command takes both flags that apply to 'go test' itself
 and flags that apply to the resulting test binary.
 
 Several of the flags control profiling and write an execution profile
-suitable for "go tool pprof"; run "go tool pprof help" for more
+suitable for "go tool pprof"; run "go tool pprof -h" for more
 information.  The --alloc_space, --alloc_objects, and --show_bytes
 options of pprof control how the information is presented.
 
@@ -1128,11 +1133,16 @@ control the execution of any test:
 	-blockprofilerate n
 	    Control the detail provided in goroutine blocking profiles by
 	    calling runtime.SetBlockProfileRate with n.
-	    See 'godoc runtime SetBlockProfileRate'.
+	    See 'go doc runtime.SetBlockProfileRate'.
 	    The profiler aims to sample, on average, one blocking event every
 	    n nanoseconds the program spends blocked.  By default,
 	    if -test.blockprofile is set without this flag, all blocking events
 	    are recorded, equivalent to -test.blockprofilerate=1.
+
+	-count n
+	    Run each test and benchmark n times (default 1).
+	    If -cpu is set, run n times for each GOMAXPROCS value.
+	    Examples are always run once.
 
 	-cover
 	    Enable coverage analysis.
@@ -1173,7 +1183,7 @@ control the execution of any test:
 
 	-memprofilerate n
 	    Enable more precise (and expensive) memory profiles by setting
-	    runtime.MemProfileRate.  See 'godoc runtime MemProfileRate'.
+	    runtime.MemProfileRate.  See 'go doc runtime.MemProfileRate'.
 	    To profile all memory allocations, use -test.memprofilerate=1
 	    and pass --alloc_space flag to the pprof tool.
 

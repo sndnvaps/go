@@ -8,7 +8,7 @@ package types
 
 import (
 	"go/ast"
-	exact "go/constants" // Renamed to reduce diffs from x/tools.  TODO: remove
+	exact "go/constant" // Renamed to reduce diffs from x/tools.  TODO: remove
 	"go/token"
 )
 
@@ -83,6 +83,7 @@ type Checker struct {
 	// context within which the current object is type-checked
 	// (valid only for the duration of type-checking a specific object)
 	context
+	pos token.Pos // if valid, identifiers are looked up as if at position pos (used by Eval)
 
 	// debugging
 	indent int // indentation for tracing

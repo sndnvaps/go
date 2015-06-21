@@ -132,10 +132,7 @@ type traceBuf struct {
 func StartTrace() error {
 	// Stop the world, so that we can take a consistent snapshot
 	// of all goroutines at the beginning of the trace.
-	semacquire(&worldsema, false)
-	_g_ := getg()
-	_g_.m.preemptoff = "start tracing"
-	systemstack(stoptheworld)
+	stopTheWorld("start tracing")
 
 	// We are in stop-the-world, but syscalls can finish and write to trace concurrently.
 	// Exitsyscall could check trace.enabled long before and then suddenly wake up
@@ -146,18 +143,24 @@ func StartTrace() error {
 
 	if trace.enabled || trace.shutdown {
 		unlock(&trace.bufLock)
-		_g_.m.preemptoff = ""
-		semrelease(&worldsema)
-		systemstack(starttheworld)
+		startTheWorld()
 		return errorString("tracing is already enabled")
 	}
 
 	trace.ticksStart = cputicks()
 	trace.timeStart = nanotime()
-	trace.enabled = true
 	trace.headerWritten = false
 	trace.footerWritten = false
 
+	// Can't set trace.enabled yet. While the world is stopped, exitsyscall could
+	// already emit a delayed event (see exitTicks in exitsyscall) if we set trace.enabled here.
+	// That would lead to an inconsistent trace:
+	// - either GoSysExit appears before EvGoInSyscall,
+	// - or GoSysExit appears for a goroutine for which we don't emit EvGoInSyscall below.
+	// To instruct traceEvent that it must not ignore events below, we set startingtrace.
+	// trace.enabled is set afterwards once we have emitted all preliminary events.
+	_g_ := getg()
+	_g_.m.startingtrace = true
 	for _, gp := range allgs {
 		status := readgstatus(gp)
 		if status != _Gdead {
@@ -168,16 +171,18 @@ func StartTrace() error {
 		}
 		if status == _Gsyscall {
 			traceEvent(traceEvGoInSyscall, -1, uint64(gp.goid))
+		} else {
+			gp.sysblocktraced = false
 		}
 	}
 	traceProcStart()
 	traceGoStart()
+	_g_.m.startingtrace = false
+	trace.enabled = true
 
 	unlock(&trace.bufLock)
 
-	_g_.m.preemptoff = ""
-	semrelease(&worldsema)
-	systemstack(starttheworld)
+	startTheWorld()
 	return nil
 }
 
@@ -186,19 +191,14 @@ func StartTrace() error {
 func StopTrace() {
 	// Stop the world so that we can collect the trace buffers from all p's below,
 	// and also to avoid races with traceEvent.
-	semacquire(&worldsema, false)
-	_g_ := getg()
-	_g_.m.preemptoff = "stop tracing"
-	systemstack(stoptheworld)
+	stopTheWorld("stop tracing")
 
 	// See the comment in StartTrace.
 	lock(&trace.bufLock)
 
 	if !trace.enabled {
 		unlock(&trace.bufLock)
-		_g_.m.preemptoff = ""
-		semrelease(&worldsema)
-		systemstack(starttheworld)
+		startTheWorld()
 		return
 	}
 
@@ -236,9 +236,7 @@ func StopTrace() {
 
 	unlock(&trace.bufLock)
 
-	_g_.m.preemptoff = ""
-	semrelease(&worldsema)
-	systemstack(starttheworld)
+	startTheWorld()
 
 	// The world is started but we've set trace.shutdown, so new tracing can't start.
 	// Wait for the trace reader to flush pending buffers and stop.
@@ -428,11 +426,11 @@ func traceEvent(ev byte, skip int, args ...uint64) {
 
 	// The caller checked that trace.enabled == true, but trace.enabled might have been
 	// turned off between the check and now. Check again. traceLockBuffer did mp.locks++,
-	// StopTrace does stoptheworld, and stoptheworld waits for mp.locks to go back to zero,
+	// StopTrace does stopTheWorld, and stopTheWorld waits for mp.locks to go back to zero,
 	// so if we see trace.enabled == true now, we know it's true for the rest of the function.
-	// Exitsyscall can run even during stoptheworld. The race with StartTrace/StopTrace
+	// Exitsyscall can run even during stopTheWorld. The race with StartTrace/StopTrace
 	// during tracing in exitsyscall is resolved by locking trace.bufLock in traceLockBuffer.
-	if !trace.enabled {
+	if !trace.enabled && !mp.startingtrace {
 		traceReleaseBuffer(pid)
 		return
 	}
@@ -733,7 +731,7 @@ func traceProcStart() {
 }
 
 func traceProcStop(pp *p) {
-	// Sysmon and stoptheworld can stop Ps blocked in syscalls,
+	// Sysmon and stopTheWorld can stop Ps blocked in syscalls,
 	// to handle this we temporary employ the P.
 	mp := acquirem()
 	oldp := mp.p
@@ -803,11 +801,15 @@ func traceGoSysCall() {
 }
 
 func traceGoSysExit(ts int64) {
+	if ts != 0 && ts < trace.ticksStart {
+		// The timestamp was obtained during a previous tracing session, ignore.
+		return
+	}
 	traceEvent(traceEvGoSysExit, -1, uint64(getg().m.curg.goid), uint64(ts)/traceTickDiv)
 }
 
 func traceGoSysBlock(pp *p) {
-	// Sysmon and stoptheworld can declare syscalls running on remote Ps as blocked,
+	// Sysmon and stopTheWorld can declare syscalls running on remote Ps as blocked,
 	// to handle this we temporary employ the P.
 	mp := acquirem()
 	oldp := mp.p

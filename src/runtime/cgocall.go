@@ -83,12 +83,7 @@ import "unsafe"
 
 // Call from Go to C.
 //go:nosplit
-func cgocall(fn, arg unsafe.Pointer) {
-	cgocall_errno(fn, arg)
-}
-
-//go:nosplit
-func cgocall_errno(fn, arg unsafe.Pointer) int32 {
+func cgocall(fn, arg unsafe.Pointer) int32 {
 	if !iscgo && GOOS != "solaris" && GOOS != "windows" {
 		throw("cgocall unavailable")
 	}
@@ -123,7 +118,7 @@ func cgocall_errno(fn, arg unsafe.Pointer) int32 {
 	 * the $GOMAXPROCS accounting.
 	 */
 	entersyscall(0)
-	errno := asmcgocall_errno(fn, arg)
+	errno := asmcgocall(fn, arg)
 	exitsyscall(0)
 
 	return errno

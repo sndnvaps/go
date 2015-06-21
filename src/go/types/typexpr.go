@@ -8,7 +8,7 @@ package types
 
 import (
 	"go/ast"
-	exact "go/constants" // Renamed to reduce diffs from x/tools.  TODO: remove
+	exact "go/constant" // Renamed to reduce diffs from x/tools.  TODO: remove
 	"go/token"
 	"sort"
 	"strconv"
@@ -22,7 +22,7 @@ func (check *Checker) ident(x *operand, e *ast.Ident, def *Named, path []*TypeNa
 	x.mode = invalid
 	x.expr = e
 
-	scope, obj := check.scope.LookupParent(e.Name)
+	scope, obj := check.scope.LookupParent(e.Name, check.pos)
 	if obj == nil {
 		if e.Name == "_" {
 			check.errorf(e.Pos(), "cannot use _ as value or type")
@@ -140,9 +140,9 @@ func (check *Checker) typ(e ast.Expr) Type {
 	return check.typExpr(e, nil, nil)
 }
 
-// funcType type-checks a function or method type and returns its signature.
-func (check *Checker) funcType(sig *Signature, recvPar *ast.FieldList, ftyp *ast.FuncType) *Signature {
-	scope := NewScope(check.scope, "function")
+// funcType type-checks a function or method type.
+func (check *Checker) funcType(sig *Signature, recvPar *ast.FieldList, ftyp *ast.FuncType) {
+	scope := NewScope(check.scope, token.NoPos, token.NoPos, "function")
 	check.recordScope(ftyp, scope)
 
 	recvList, _ := check.collectParams(scope, recvPar, false)
@@ -202,8 +202,6 @@ func (check *Checker) funcType(sig *Signature, recvPar *ast.FieldList, ftyp *ast
 	sig.params = NewTuple(params...)
 	sig.results = NewTuple(results...)
 	sig.variadic = variadic
-
-	return sig
 }
 
 // typExprInternal drives type checking of types.
@@ -415,7 +413,7 @@ func (check *Checker) collectParams(scope *Scope, list *ast.FieldList, variadicO
 					// ok to continue
 				}
 				par := NewParam(name.Pos(), check.pkg, name.Name, typ)
-				check.declare(scope, name, par)
+				check.declare(scope, name, par, scope.pos)
 				params = append(params, par)
 			}
 			named = true
@@ -525,20 +523,14 @@ func (check *Checker) interfaceType(iface *Interface, ityp *ast.InterfaceType, d
 	for _, e := range embedded {
 		pos := e.Pos()
 		typ := check.typExpr(e, nil, path)
+		// Determine underlying embedded (possibly incomplete) type
+		// by following its forward chain.
 		named, _ := typ.(*Named)
-		if named == nil {
-			if typ != Typ[Invalid] {
-				check.invalidAST(pos, "%s is not named type", typ)
-			}
-			continue
-		}
-		// determine underlying (possibly incomplete) type
-		// by following its forward chain
-		u := underlying(named)
-		embed, _ := u.(*Interface)
+		under := underlying(named)
+		embed, _ := under.(*Interface)
 		if embed == nil {
-			if u != Typ[Invalid] {
-				check.errorf(pos, "%s is not an interface", named)
+			if typ != Typ[Invalid] {
+				check.errorf(pos, "%s is not an interface", typ)
 			}
 			continue
 		}

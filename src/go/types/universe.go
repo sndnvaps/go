@@ -7,7 +7,7 @@
 package types
 
 import (
-	exact "go/constants" // Renamed to reduce diffs from x/tools.  TODO: remove
+	exact "go/constant" // Renamed to reduce diffs from x/tools.  TODO: remove
 	"go/token"
 	"strings"
 )
@@ -176,7 +176,7 @@ func DefPredeclaredTestFuncs() {
 }
 
 func init() {
-	Universe = NewScope(nil, "universe")
+	Universe = NewScope(nil, token.NoPos, token.NoPos, "universe")
 	Unsafe = NewPackage("unsafe", "unsafe")
 	Unsafe.complete = true
 
