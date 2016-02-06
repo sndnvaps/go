@@ -6,7 +6,10 @@
 
 package runtime
 
-import "unsafe"
+import (
+	"runtime/internal/sys"
+	"unsafe"
+)
 
 func dumpregs(c *sigctxt) {
 	print("eax    ", hex(c.eax()), "\n")
@@ -27,7 +30,8 @@ func dumpregs(c *sigctxt) {
 var crashing int32
 
 // May run during STW, so write barriers are not allowed.
-//go:nowritebarrier
+//
+//go:nowritebarrierrec
 func sighandler(sig uint32, info *siginfo, ctxt unsafe.Pointer, gp *g) {
 	_g_ := getg()
 	c := &sigctxt{info, ctxt}
@@ -67,21 +71,31 @@ func sighandler(sig uint32, info *siginfo, ctxt unsafe.Pointer, gp *g) {
 			}
 		}
 
-		// Only push runtime.sigpanic if rip != 0.
-		// If rip == 0, probably panicked because of a
+		pc := uintptr(c.eip())
+		sp := uintptr(c.esp())
+
+		// If we don't recognize the PC as code
+		// but we do recognize the top pointer on the stack as code,
+		// then assume this was a call to non-code and treat like
+		// pc == 0, to make unwinding show the context.
+		if pc != 0 && findfunc(pc) == nil && findfunc(*(*uintptr)(unsafe.Pointer(sp))) != nil {
+			pc = 0
+		}
+
+		// Only push runtime.sigpanic if pc != 0.
+		// If pc == 0, probably panicked because of a
 		// call to a nil func.  Not pushing that onto sp will
 		// make the trace look like a call to runtime.sigpanic instead.
 		// (Otherwise the trace will end at runtime.sigpanic and we
 		// won't get to see who faulted.)
-		if c.eip() != 0 {
-			sp := c.esp()
-			if regSize > ptrSize {
-				sp -= ptrSize
-				*(*uintptr)(unsafe.Pointer(uintptr(sp))) = 0
+		if pc != 0 {
+			if sys.RegSize > sys.PtrSize {
+				sp -= sys.PtrSize
+				*(*uintptr)(unsafe.Pointer(sp)) = 0
 			}
-			sp -= ptrSize
-			*(*uintptr)(unsafe.Pointer(uintptr(sp))) = uintptr(c.eip())
-			c.set_esp(sp)
+			sp -= sys.PtrSize
+			*(*uintptr)(unsafe.Pointer(sp)) = pc
+			c.set_esp(uint32(sp))
 		}
 		c.set_eip(uint32(funcPC(sigpanic)))
 		return
@@ -93,8 +107,12 @@ func sighandler(sig uint32, info *siginfo, ctxt unsafe.Pointer, gp *g) {
 		}
 	}
 
+	if c.sigcode() == _SI_USER && signal_ignored(sig) {
+		return
+	}
+
 	if flags&_SigKill != 0 {
-		exit(2)
+		dieFromSignal(int32(sig))
 	}
 
 	if flags&_SigThrow == 0 {
@@ -121,8 +139,8 @@ func sighandler(sig uint32, info *siginfo, ctxt unsafe.Pointer, gp *g) {
 	}
 	print("\n")
 
-	var docrash bool
-	if gotraceback(&docrash) > 0 {
+	level, _, docrash := gotraceback()
+	if level > 0 {
 		goroutineheader(gp)
 
 		// On Linux/386, all system calls go through the vdso kernel_vsyscall routine.
@@ -160,25 +178,21 @@ func sighandler(sig uint32, info *siginfo, ctxt unsafe.Pointer, gp *g) {
 	}
 
 	if docrash {
-		// TODO(rsc): Implement raiseproc on other systems
-		// and then add to this if condition.
-		if GOOS == "linux" {
-			crashing++
-			if crashing < sched.mcount {
-				// There are other m's that need to dump their stacks.
-				// Relay SIGQUIT to the next m by sending it to the current process.
-				// All m's that have already received SIGQUIT have signal masks blocking
-				// receipt of any signals, so the SIGQUIT will go to an m that hasn't seen it yet.
-				// When the last m receives the SIGQUIT, it will fall through to the call to
-				// crash below. Just in case the relaying gets botched, each m involved in
-				// the relay sleeps for 5 seconds and then does the crash/exit itself.
-				// In expected operation, the last m has received the SIGQUIT and run
-				// crash/exit and the process is gone, all long before any of the
-				// 5-second sleeps have finished.
-				print("\n-----\n\n")
-				raiseproc(_SIGQUIT)
-				usleep(5 * 1000 * 1000)
-			}
+		crashing++
+		if crashing < sched.mcount {
+			// There are other m's that need to dump their stacks.
+			// Relay SIGQUIT to the next m by sending it to the current process.
+			// All m's that have already received SIGQUIT have signal masks blocking
+			// receipt of any signals, so the SIGQUIT will go to an m that hasn't seen it yet.
+			// When the last m receives the SIGQUIT, it will fall through to the call to
+			// crash below. Just in case the relaying gets botched, each m involved in
+			// the relay sleeps for 5 seconds and then does the crash/exit itself.
+			// In expected operation, the last m has received the SIGQUIT and run
+			// crash/exit and the process is gone, all long before any of the
+			// 5-second sleeps have finished.
+			print("\n-----\n\n")
+			raiseproc(_SIGQUIT)
+			usleep(5 * 1000 * 1000)
 		}
 		crash()
 	}

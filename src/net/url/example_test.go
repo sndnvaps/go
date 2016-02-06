@@ -43,6 +43,21 @@ func ExampleURL() {
 	// Output: https://google.com/search?q=golang
 }
 
+func ExampleURL_roundtrip() {
+	// Parse + String preserve the original encoding.
+	u, err := url.Parse("https://example.com/foo%2fbar")
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(u.Path)
+	fmt.Println(u.RawPath)
+	fmt.Println(u.String())
+	// Output:
+	// /foo/bar
+	// /foo%2fbar
+	// https://example.com/foo%2fbar
+}
+
 func ExampleURL_opaque() {
 	// Sending a literal '%' in an HTTP request's Path
 	req := &http.Request{
@@ -68,4 +83,18 @@ func ExampleURL_opaque() {
 	// User-Agent: godoc-example/0.1
 	// Accept-Encoding: gzip
 	//
+}
+
+func ExampleURL_ResolveReference() {
+	u, err := url.Parse("../../..//search?q=dotnet")
+	if err != nil {
+		log.Fatal(err)
+	}
+	base, err := url.Parse("http://example.com/directory/")
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(base.ResolveReference(u))
+	// Output:
+	// http://example.com/search?q=dotnet
 }

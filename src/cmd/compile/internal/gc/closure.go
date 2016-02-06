@@ -9,9 +9,7 @@ import (
 	"fmt"
 )
 
-/*
- * function literals aka closures
- */
+// function literals aka closures
 func closurehdr(ntype *Node) {
 	var name *Node
 	var a *Node
@@ -87,7 +85,7 @@ func typecheckclosure(func_ *Node, top int) {
 		if !n.Name.Captured {
 			n.Name.Captured = true
 			if n.Name.Decldepth == 0 {
-				Fatal("typecheckclosure: var %v does not have decldepth assigned", Nconv(n, obj.FmtShort))
+				Fatalf("typecheckclosure: var %v does not have decldepth assigned", Nconv(n, obj.FmtShort))
 			}
 
 			// Ignore assignments to the variable in straightline code
@@ -172,17 +170,15 @@ func closurename(n *Node) *Sym {
 		n.Func.Outerfunc.Func.Closgen++
 		gen = n.Func.Outerfunc.Func.Closgen
 	} else {
-		Fatal("closurename called for %v", Nconv(n, obj.FmtShort))
+		Fatalf("closurename called for %v", Nconv(n, obj.FmtShort))
 	}
 	n.Sym = Lookupf("%s.%s%d", outer, prefix, gen)
 	return n.Sym
 }
 
 func makeclosure(func_ *Node) *Node {
-	/*
-	 * wrap body in external function
-	 * that begins by reading closure parameters.
-	 */
+	// wrap body in external function
+	// that begins by reading closure parameters.
 	xtype := Nod(OTFUNC, nil, nil)
 
 	xtype.List = func_.List
@@ -199,11 +195,12 @@ func makeclosure(func_ *Node) *Node {
 	xfunc.Func.Nname.Name.Funcdepth = func_.Func.Depth
 	xfunc.Func.Depth = func_.Func.Depth
 	xfunc.Func.Endlineno = func_.Func.Endlineno
+	makefuncsym(xfunc.Func.Nname.Sym)
 
 	xfunc.Nbody = func_.Nbody
 	xfunc.Func.Dcl = concat(func_.Func.Dcl, xfunc.Func.Dcl)
 	if xfunc.Nbody == nil {
-		Fatal("empty body - won't generate any code")
+		Fatalf("empty body - won't generate any code")
 	}
 	typecheck(&xfunc, Etop)
 
@@ -300,17 +297,18 @@ func transformclosure(xfunc *Node) {
 		//	func(a int, byval int, &byref *int) {
 		//		println(byval)
 		//		(*&byref)++
-		//	}(42, byval, &byref)
+		//	}(byval, &byref, 42)
 
 		// f is ONAME of the actual function.
 		f := xfunc.Func.Nname
 
-		// Get pointer to input arguments and rewind to the end.
-		// We are going to append captured variables to input args.
+		// Get pointer to input arguments.
+		// We are going to insert captured variables before input args.
 		param := &getinargx(f.Type).Type
+		original_args := *param // old input args
+		original_dcl := xfunc.Func.Dcl
+		xfunc.Func.Dcl = nil
 
-		for ; *param != nil; param = &(*param).Down {
-		}
 		var v *Node
 		var addr *Node
 		var fld *Type
@@ -320,7 +318,7 @@ func transformclosure(xfunc *Node) {
 				continue
 			}
 			fld = typ(TFIELD)
-			fld.Funarg = 1
+			fld.Funarg = true
 			if v.Name.Byval {
 				// If v is captured by value, we merely downgrade it to PPARAM.
 				v.Class = PPARAM
@@ -342,16 +340,18 @@ func transformclosure(xfunc *Node) {
 			fld.Type = fld.Nname.Type
 			fld.Sym = fld.Nname.Sym
 
-			// Declare the new param and append it to input arguments.
+			// Declare the new param and add it the first part of the input arguments.
 			xfunc.Func.Dcl = list(xfunc.Func.Dcl, fld.Nname)
 
 			*param = fld
 			param = &fld.Down
 		}
+		*param = original_args
+		xfunc.Func.Dcl = concat(xfunc.Func.Dcl, original_dcl)
 
 		// Recalculate param offsets.
 		if f.Type.Width > 0 {
-			Fatal("transformclosure: width is already calculated")
+			Fatalf("transformclosure: width is already calculated")
 		}
 		dowidth(f.Type)
 		xfunc.Type = f.Type // update type of ODCLFUNC
@@ -382,12 +382,9 @@ func transformclosure(xfunc *Node) {
 			cv.Xoffset = offset
 			offset += cv.Type.Width
 
-			if v.Name.Byval && v.Type.Width <= int64(2*Widthptr) && Thearch.Thechar == '6' {
-				//  If it is a small variable captured by value, downgrade it to PAUTO.
-				// This optimization is currently enabled only for amd64, see:
-				// https://github.com/golang/go/issues/9865
+			if v.Name.Byval && v.Type.Width <= int64(2*Widthptr) {
+				// If it is a small variable captured by value, downgrade it to PAUTO.
 				v.Class = PAUTO
-
 				v.Ullman = 1
 				xfunc.Func.Dcl = list(xfunc.Func.Dcl, v)
 				body = list(body, Nod(OAS, v, cv))
@@ -490,7 +487,7 @@ func typecheckpartialcall(fn *Node, sym *Node) {
 		break
 
 	default:
-		Fatal("invalid typecheckpartialcall")
+		Fatalf("invalid typecheckpartialcall")
 	}
 
 	// Create top-level function.
@@ -517,7 +514,7 @@ func makepartialcall(fn *Node, t0 *Type, meth *Node) *Node {
 		basetype = basetype.Type
 	}
 	if basetype.Etype != TINTER && basetype.Sym == nil {
-		Fatal("missing base type for %v", rcvrtype)
+		Fatalf("missing base type for %v", rcvrtype)
 	}
 
 	var spkg *Pkg

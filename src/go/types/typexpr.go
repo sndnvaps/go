@@ -8,7 +8,7 @@ package types
 
 import (
 	"go/ast"
-	exact "go/constant" // Renamed to reduce diffs from x/tools.  TODO: remove
+	"go/constant"
 	"go/token"
 	"sort"
 	"strconv"
@@ -65,7 +65,7 @@ func (check *Checker) ident(x *operand, e *ast.Ident, def *Named, path []*TypeNa
 			x.val = obj.val
 		}
 		assert(x.val != nil)
-		x.mode = constant
+		x.mode = constant_
 
 	case *TypeName:
 		x.mode = typexpr
@@ -151,7 +151,7 @@ func (check *Checker) funcType(sig *Signature, recvPar *ast.FieldList, ftyp *ast
 
 	if recvPar != nil {
 		// recv parameter list present (may be empty)
-		// spec: "The receiver is specified via an extra parameter section preceeding the
+		// spec: "The receiver is specified via an extra parameter section preceding the
 		// method name. That parameter section must declare a single parameter, the receiver."
 		var recv *Var
 		switch len(recvList) {
@@ -367,22 +367,25 @@ func (check *Checker) typOrNil(e ast.Expr) Type {
 func (check *Checker) arrayLength(e ast.Expr) int64 {
 	var x operand
 	check.expr(&x, e)
-	if x.mode != constant {
+	if x.mode != constant_ {
 		if x.mode != invalid {
 			check.errorf(x.pos(), "array length %s must be constant", &x)
 		}
 		return 0
 	}
-	if !x.isInteger() {
-		check.errorf(x.pos(), "array length %s must be integer", &x)
-		return 0
+	if isUntyped(x.typ) || isInteger(x.typ) {
+		if val := constant.ToInt(x.val); val.Kind() == constant.Int {
+			if representableConst(val, check.conf, Typ[Int], nil) {
+				if n, ok := constant.Int64Val(val); ok && n >= 0 {
+					return n
+				}
+				check.errorf(x.pos(), "invalid array length %s", &x)
+				return 0
+			}
+		}
 	}
-	n, ok := exact.Int64Val(x.val)
-	if !ok || n < 0 {
-		check.errorf(x.pos(), "invalid array length %s", &x)
-		return 0
-	}
-	return n
+	check.errorf(x.pos(), "array length %s must be integer", &x)
+	return 0
 }
 
 func (check *Checker) collectParams(scope *Scope, list *ast.FieldList, variadicOk bool) (params []*Var, variadic bool) {

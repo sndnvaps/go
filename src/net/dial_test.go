@@ -5,6 +5,7 @@
 package net
 
 import (
+	"internal/testenv"
 	"io"
 	"net/internal/socktest"
 	"runtime"
@@ -124,7 +125,24 @@ func TestDialTimeoutFDLeak(t *testing.T) {
 		defer sw.Set(socktest.FilterConnect, nil)
 	}
 
-	before := sw.Sockets()
+	// Avoid tracking open-close jitterbugs between netFD and
+	// socket that leads to confusion of information inside
+	// socktest.Switch.
+	// It may happen when the Dial call bumps against TCP
+	// simultaneous open. See selfConnect in tcpsock_posix.go.
+	defer func() {
+		sw.Set(socktest.FilterClose, nil)
+		forceCloseSockets()
+	}()
+	var mu sync.Mutex
+	var attempts int
+	sw.Set(socktest.FilterClose, func(so *socktest.Status) (socktest.AfterFilter, error) {
+		mu.Lock()
+		attempts++
+		mu.Unlock()
+		return nil, errTimedout
+	})
+
 	const N = 100
 	var wg sync.WaitGroup
 	wg.Add(N)
@@ -142,9 +160,8 @@ func TestDialTimeoutFDLeak(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-	after := sw.Sockets()
-	if len(after) != len(before) {
-		t.Errorf("got %d; want %d", len(after), len(before))
+	if attempts < N {
+		t.Errorf("got %d; want >= %d", attempts, N)
 	}
 }
 
@@ -220,18 +237,27 @@ const (
 // In some environments, the slow IPs may be explicitly unreachable, and fail
 // more quickly than expected. This test hook prevents dialTCP from returning
 // before the deadline.
-func slowDialTCP(net string, laddr, raddr *TCPAddr, deadline time.Time) (*TCPConn, error) {
-	c, err := dialTCP(net, laddr, raddr, deadline)
+func slowDialTCP(net string, laddr, raddr *TCPAddr, deadline time.Time, cancel <-chan struct{}) (*TCPConn, error) {
+	c, err := dialTCP(net, laddr, raddr, deadline, cancel)
 	if ParseIP(slowDst4).Equal(raddr.IP) || ParseIP(slowDst6).Equal(raddr.IP) {
 		time.Sleep(deadline.Sub(time.Now()))
 	}
 	return c, err
 }
 
-func dialClosedPort() time.Duration {
+func dialClosedPort() (actual, expected time.Duration) {
+	// Estimate the expected time for this platform.
+	// On Windows, dialing a closed port takes roughly 1 second,
+	// but other platforms should be instantaneous.
+	if runtime.GOOS == "windows" {
+		expected = 1500 * time.Millisecond
+	} else {
+		expected = 95 * time.Millisecond
+	}
+
 	l, err := Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		return 999 * time.Hour
+		return 999 * time.Hour, expected
 	}
 	addr := l.Addr().String()
 	l.Close()
@@ -246,7 +272,7 @@ func dialClosedPort() time.Duration {
 		}
 		elapsed := time.Now().Sub(startTime)
 		if i == 2 {
-			return elapsed
+			return elapsed, expected
 		}
 	}
 }
@@ -259,16 +285,7 @@ func TestDialParallel(t *testing.T) {
 		t.Skip("both IPv4 and IPv6 are required")
 	}
 
-	// Determine the time required to dial a closed port.
-	// On Windows, this takes roughly 1 second, but other platforms
-	// are expected to be instantaneous.
-	closedPortDelay := dialClosedPort()
-	var expectClosedPortDelay time.Duration
-	if runtime.GOOS == "windows" {
-		expectClosedPortDelay = 1095 * time.Millisecond
-	} else {
-		expectClosedPortDelay = 95 * time.Millisecond
-	}
+	closedPortDelay, expectClosedPortDelay := dialClosedPort()
 	if closedPortDelay > expectClosedPortDelay {
 		t.Errorf("got %v; want <= %v", closedPortDelay, expectClosedPortDelay)
 	}
@@ -370,13 +387,15 @@ func TestDialParallel(t *testing.T) {
 
 		primaries := makeAddrs(tt.primaries, dss.port)
 		fallbacks := makeAddrs(tt.fallbacks, dss.port)
+		d := Dialer{
+			FallbackDelay: fallbackDelay,
+			Timeout:       slowTimeout,
+		}
 		ctx := &dialContext{
-			Dialer: Dialer{
-				FallbackDelay: fallbackDelay,
-				Timeout:       slowTimeout,
-			},
-			network: "tcp",
-			address: "?",
+			Dialer:        d,
+			network:       "tcp",
+			address:       "?",
+			finalDeadline: d.deadline(time.Now()),
 		}
 		startTime := time.Now()
 		c, err := dialParallel(ctx, primaries, fallbacks)
@@ -491,15 +510,21 @@ func TestDialerFallbackDelay(t *testing.T) {
 }
 
 func TestDialSerialAsyncSpuriousConnection(t *testing.T) {
+	if runtime.GOOS == "plan9" {
+		t.Skip("skipping on plan9; no deadline support, golang.org/issue/11932")
+	}
 	ln, err := newLocalListener("tcp")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer ln.Close()
 
+	d := Dialer{}
 	ctx := &dialContext{
-		network: "tcp",
-		address: "?",
+		Dialer:        d,
+		network:       "tcp",
+		address:       "?",
+		finalDeadline: d.deadline(time.Now()),
 	}
 
 	results := make(chan dialResult)
@@ -551,8 +576,7 @@ func TestDialerPartialDeadline(t *testing.T) {
 		{now.Add(1 * time.Millisecond), now, 1, noDeadline, errTimeout},
 	}
 	for i, tt := range testCases {
-		d := Dialer{Deadline: tt.deadline}
-		deadline, err := d.partialDeadline(tt.now, tt.addrs)
+		deadline, err := partialDeadline(tt.now, tt.deadline, tt.addrs)
 		if err != tt.expectErr {
 			t.Errorf("#%d: got %v; want %v", i, err, tt.expectErr)
 		}
@@ -605,6 +629,11 @@ func TestDialerDualStack(t *testing.T) {
 		t.Skip("both IPv4 and IPv6 are required")
 	}
 
+	closedPortDelay, expectClosedPortDelay := dialClosedPort()
+	if closedPortDelay > expectClosedPortDelay {
+		t.Errorf("got %v; want <= %v", closedPortDelay, expectClosedPortDelay)
+	}
+
 	origTestHookLookupIP := testHookLookupIP
 	defer func() { testHookLookupIP = origTestHookLookupIP }()
 	testHookLookupIP = lookupLocalhost
@@ -618,7 +647,7 @@ func TestDialerDualStack(t *testing.T) {
 		}
 	}
 
-	const T = 100 * time.Millisecond
+	var timeout = 150*time.Millisecond + closedPortDelay
 	for _, dualstack := range []bool{false, true} {
 		dss, err := newDualStackServer([]streamListener{
 			{network: "tcp4", address: "127.0.0.1"},
@@ -632,7 +661,7 @@ func TestDialerDualStack(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		d := &Dialer{DualStack: dualstack, Timeout: T}
+		d := &Dialer{DualStack: dualstack, Timeout: timeout}
 		for range dss.lns {
 			c, err := d.Dial("tcp", JoinHostPort("localhost", dss.port))
 			if err != nil {
@@ -648,7 +677,7 @@ func TestDialerDualStack(t *testing.T) {
 			c.Close()
 		}
 	}
-	time.Sleep(2 * T) // wait for the dial racers to stop
+	time.Sleep(timeout * 3 / 2) // wait for the dial racers to stop
 }
 
 func TestDialerKeepAlive(t *testing.T) {
@@ -685,6 +714,70 @@ func TestDialerKeepAlive(t *testing.T) {
 		c.Close()
 		if got != keepAlive {
 			t.Errorf("Dialer.KeepAlive = %v: SetKeepAlive called = %v, want %v", d.KeepAlive, got, !got)
+		}
+	}
+}
+
+func TestDialCancel(t *testing.T) {
+	if runtime.GOOS == "plan9" || runtime.GOOS == "nacl" {
+		// plan9 is not implemented and nacl doesn't have
+		// external network access.
+		t.Skipf("skipping on %s", runtime.GOOS)
+	}
+	onGoBuildFarm := testenv.Builder() != ""
+	if testing.Short() && !onGoBuildFarm {
+		t.Skip("skipping in short mode")
+	}
+
+	blackholeIPPort := JoinHostPort(slowDst4, "1234")
+	if !supportsIPv4 {
+		blackholeIPPort = JoinHostPort(slowDst6, "1234")
+	}
+
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+
+	const cancelTick = 5 // the timer tick we cancel the dial at
+	const timeoutTick = 100
+
+	var d Dialer
+	cancel := make(chan struct{})
+	d.Cancel = cancel
+	errc := make(chan error, 1)
+	connc := make(chan Conn, 1)
+	go func() {
+		if c, err := d.Dial("tcp", blackholeIPPort); err != nil {
+			errc <- err
+		} else {
+			connc <- c
+		}
+	}()
+	ticks := 0
+	for {
+		select {
+		case <-ticker.C:
+			ticks++
+			if ticks == cancelTick {
+				close(cancel)
+			}
+			if ticks == timeoutTick {
+				t.Fatal("timeout waiting for dial to fail")
+			}
+		case c := <-connc:
+			c.Close()
+			t.Fatal("unexpected successful connection")
+		case err := <-errc:
+			if perr := parseDialError(err); perr != nil {
+				t.Error(perr)
+			}
+			if ticks < cancelTick {
+				t.Fatalf("dial error after %d ticks (%d before cancel sent): %v",
+					ticks, cancelTick-ticks, err)
+			}
+			if oe, ok := err.(*OpError); !ok || oe.Err != errCanceled {
+				t.Fatalf("dial error = %v (%T); want OpError with Err == errCanceled", err, err)
+			}
+			return // success.
 		}
 	}
 }

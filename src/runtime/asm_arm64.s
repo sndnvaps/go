@@ -36,9 +36,9 @@ TEXT runtime·rt0_go(SB),NOSPLIT,$0
 	MRS_TPIDR_R0			// load TLS base pointer
 	MOVD	R0, R3			// arg 3: TLS base pointer
 #ifdef TLSG_IS_VARIABLE
-	MOVD	$runtime·tls_g(SB), R2 	// arg 2: tlsg
+	MOVD	$runtime·tls_g(SB), R2 	// arg 2: &tls_g
 #else
-	MOVD	$0x10, R2		// arg 2: tlsg TODO(minux): hardcoded for linux
+	MOVD	$0, R2		        // arg 2: not used when using platform's TLS
 #endif
 	MOVD	$setg_gcc<>(SB), R1	// arg 1: setg
 	MOVD	g, R0			// arg 0: G
@@ -424,67 +424,34 @@ end:						\
 	BL	runtime·callwritebarrier(SB);	\
 	RET
 
-CALLFN(·call16, 16)
-CALLFN(·call32, 32)
-CALLFN(·call64, 64)
-CALLFN(·call128, 128)
-CALLFN(·call256, 256)
-CALLFN(·call512, 512)
-CALLFN(·call1024, 1024)
-CALLFN(·call2048, 2048)
-CALLFN(·call4096, 4096)
-CALLFN(·call8192, 8192)
-CALLFN(·call16384, 16384)
-CALLFN(·call32768, 32768)
-CALLFN(·call65536, 65536)
-CALLFN(·call131072, 131072)
-CALLFN(·call262144, 262144)
-CALLFN(·call524288, 524288)
-CALLFN(·call1048576, 1048576)
-CALLFN(·call2097152, 2097152)
-CALLFN(·call4194304, 4194304)
-CALLFN(·call8388608, 8388608)
-CALLFN(·call16777216, 16777216)
-CALLFN(·call33554432, 33554432)
-CALLFN(·call67108864, 67108864)
-CALLFN(·call134217728, 134217728)
-CALLFN(·call268435456, 268435456)
-CALLFN(·call536870912, 536870912)
-CALLFN(·call1073741824, 1073741824)
-
-// bool cas(uint32 *ptr, uint32 old, uint32 new)
-// Atomically:
-//	if(*val == old){
-//		*val = new;
-//		return 1;
-//	} else
-//		return 0;
-TEXT runtime·cas(SB), NOSPLIT, $0-17
-	MOVD	ptr+0(FP), R0
-	MOVW	old+8(FP), R1
-	MOVW	new+12(FP), R2
-again:
-	LDAXRW	(R0), R3
-	CMPW	R1, R3
-	BNE	ok
-	STLXRW	R2, (R0), R3
-	CBNZ	R3, again
-ok:
-	CSET	EQ, R0
-	MOVB	R0, ret+16(FP)
-	RET
-
-TEXT runtime·casuintptr(SB), NOSPLIT, $0-25
-	B	runtime·cas64(SB)
-
-TEXT runtime·atomicloaduintptr(SB), NOSPLIT, $-8-16
-	B	runtime·atomicload64(SB)
-
-TEXT runtime·atomicloaduint(SB), NOSPLIT, $-8-16
-	B	runtime·atomicload64(SB)
-
-TEXT runtime·atomicstoreuintptr(SB), NOSPLIT, $0-16
-	B	runtime·atomicstore64(SB)
+// These have 8 added to make the overall frame size a multiple of 16,
+// as required by the ABI. (There is another +8 for the saved LR.)
+CALLFN(·call32, 40 )
+CALLFN(·call64, 72 )
+CALLFN(·call128, 136 )
+CALLFN(·call256, 264 )
+CALLFN(·call512, 520 )
+CALLFN(·call1024, 1032 )
+CALLFN(·call2048, 2056 )
+CALLFN(·call4096, 4104 )
+CALLFN(·call8192, 8200 )
+CALLFN(·call16384, 16392 )
+CALLFN(·call32768, 32776 )
+CALLFN(·call65536, 65544 )
+CALLFN(·call131072, 131080 )
+CALLFN(·call262144, 262152 )
+CALLFN(·call524288, 524296 )
+CALLFN(·call1048576, 1048584 )
+CALLFN(·call2097152, 2097160 )
+CALLFN(·call4194304, 4194312 )
+CALLFN(·call8388608, 8388616 )
+CALLFN(·call16777216, 16777224 )
+CALLFN(·call33554432, 33554440 )
+CALLFN(·call67108864, 67108872 )
+CALLFN(·call134217728, 134217736 )
+CALLFN(·call268435456, 268435464 )
+CALLFN(·call536870912, 536870920 )
+CALLFN(·call1073741824, 1073741832 )
 
 // AES hashing not implemented for ARM64, issue #10109.
 TEXT runtime·aeshash(SB),NOSPLIT,$-8-0
@@ -499,17 +466,7 @@ TEXT runtime·aeshash64(SB),NOSPLIT,$-8-0
 TEXT runtime·aeshashstr(SB),NOSPLIT,$-8-0
 	MOVW	$0, R0
 	MOVW	(R0), R1
-
-// bool casp(void **val, void *old, void *new)
-// Atomically:
-//	if(*val == old){
-//		*val = new;
-//		return 1;
-//	} else
-//		return 0;
-TEXT runtime·casp1(SB), NOSPLIT, $0-25
-	B runtime·cas64(SB)
-
+	
 TEXT runtime·procyield(SB),NOSPLIT,$0-0
 	MOVWU	cycles+0(FP), R0
 again:
@@ -613,7 +570,7 @@ TEXT runtime·cgocallback(SB),NOSPLIT,$24-24
 
 // cgocallback_gofunc(FuncVal*, void *frame, uintptr framesize)
 // See cgocall.go for more details.
-TEXT ·cgocallback_gofunc(SB),NOSPLIT,$16-24
+TEXT ·cgocallback_gofunc(SB),NOSPLIT,$24-24
 	NO_LOCAL_POINTERS
 
 	// Load g from thread-local storage.
@@ -629,7 +586,13 @@ nocgo:
 	// lots of space, but the linker doesn't know. Hide the call from
 	// the linker analysis by using an indirect call.
 	CMP	$0, g
-	BNE	havem
+	BEQ	needm
+
+	MOVD	g_m(g), R8
+	MOVD	R8, savedm-8(SP)
+	B	havem
+
+needm:
 	MOVD	g, savedm-8(SP) // g is zero, so is m.
 	MOVD	$runtime·needm(SB), R0
 	BL	(R0)
@@ -651,8 +614,6 @@ nocgo:
 	MOVD	R0, (g_sched+gobuf_sp)(R3)
 
 havem:
-	MOVD	g_m(g), R8
-	MOVD	R8, savedm-8(SP)
 	// Now there's a valid m, and we're running on its m->g0.
 	// Save current m->g0->sched.sp on stack and then set it to SP.
 	// Save current sp in m->g0->sched.sp in preparation for
@@ -721,7 +682,7 @@ droppedm:
 
 // Called from cgo wrappers, this function returns g->m->curg.stack.hi.
 // Must obey the gcc calling convention.
-TEXT _cgo_topofstack(SB),NOSPLIT,$16
+TEXT _cgo_topofstack(SB),NOSPLIT,$24
 	// g (R28) and REGTMP (R27)  might be clobbered by load_g. They
 	// are callee-save in the gcc calling convention, so save them.
 	MOVD	R27, savedR27-8(SP)
@@ -868,6 +829,8 @@ TEXT bytes·Compare(SB),NOSPLIT,$-4-56
 // On exit:
 // R4, R5, and R6 are clobbered
 TEXT runtime·cmpbody<>(SB),NOSPLIT,$-4-0
+	CMP	R2, R3
+	BEQ	samebytes // same starting pointers; compare lengths
 	CMP	R0, R1
 	CSEL    LT, R1, R0, R6 // R6 is min(R0, R1)
 
@@ -1025,3 +988,21 @@ TEXT runtime·prefetcht2(SB),NOSPLIT,$0-8
 TEXT runtime·prefetchnta(SB),NOSPLIT,$0-8
 	RET
 
+TEXT runtime·sigreturn(SB),NOSPLIT,$0-8
+        RET
+
+// This is called from .init_array and follows the platform, not Go, ABI.
+TEXT runtime·addmoduledata(SB),NOSPLIT,$0-0
+	SUB	$0x10, RSP
+	MOVD	R27, 8(RSP) // The access to global variables below implicitly uses R27, which is callee-save
+	MOVD	runtime·lastmoduledatap(SB), R1
+	MOVD	R0, moduledata_next(R1)
+	MOVD	R0, runtime·lastmoduledatap(SB)
+	MOVD	8(RSP), R27
+	ADD	$0x10, RSP
+	RET
+
+TEXT ·checkASM(SB),NOSPLIT,$0-1
+	MOVW	$1, R3
+	MOVB	R3, ret+0(FP)
+	RET

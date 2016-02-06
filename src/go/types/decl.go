@@ -6,7 +6,7 @@ package types
 
 import (
 	"go/ast"
-	exact "go/constant" // Renamed to reduce diffs from x/tools.  TODO: remove
+	"go/constant"
 	"go/token"
 )
 
@@ -105,7 +105,7 @@ func (check *Checker) constDecl(obj *Const, typ, init ast.Expr) {
 	defer func() { check.iota = nil }()
 
 	// provide valid constant value under all circumstances
-	obj.val = exact.MakeUnknown()
+	obj.val = constant.MakeUnknown()
 
 	// determine type, if any
 	if typ != nil {
@@ -156,7 +156,7 @@ func (check *Checker) varDecl(obj *Var, lhs []*Var, typ, init ast.Expr) {
 		assert(lhs == nil || lhs[0] == obj)
 		var x operand
 		check.expr(&x, init)
-		check.initVar(obj, &x, false)
+		check.initVar(obj, &x, "variable declaration")
 		return
 	}
 
@@ -228,7 +228,7 @@ func (check *Checker) typeDecl(obj *TypeName, typ ast.Expr, def *Named, path []*
 	// TODO(gri) It's easy to create pathological cases where the
 	// current approach is incorrect: In general we need to know
 	// and add all methods _before_ type-checking the type.
-	// See http://play.golang.org/p/WMpE0q2wK8
+	// See https://play.golang.org/p/WMpE0q2wK8
 	check.addMethodDecls(obj)
 }
 
@@ -335,7 +335,7 @@ func (check *Checker) declStmt(decl ast.Decl) {
 					// declare all constants
 					lhs := make([]*Const, len(s.Names))
 					for i, name := range s.Names {
-						obj := NewConst(name.Pos(), pkg, name.Name, nil, exact.MakeInt64(int64(iota)))
+						obj := NewConst(name.Pos(), pkg, name.Name, nil, constant.MakeInt64(int64(iota)))
 						lhs[i] = obj
 
 						var init ast.Expr

@@ -5,6 +5,7 @@
 package main
 
 import (
+	"go/build"
 	"internal/testenv"
 	"io/ioutil"
 	"os"
@@ -104,6 +105,8 @@ func TestDisasm(t *testing.T) {
 		t.Skipf("skipping on %s, issue 9039", runtime.GOARCH)
 	case "arm64":
 		t.Skipf("skipping on %s, issue 10106", runtime.GOARCH)
+	case "mips64", "mips64le":
+		t.Skipf("skipping on %s, issue 12559", runtime.GOARCH)
 	}
 	testDisasm(t)
 }
@@ -118,10 +121,15 @@ func TestDisasmExtld(t *testing.T) {
 		t.Skipf("skipping on %s, no support for external linking, issue 9038", runtime.GOARCH)
 	case "arm64":
 		t.Skipf("skipping on %s, issue 10106", runtime.GOARCH)
+	case "mips64", "mips64le":
+		t.Skipf("skipping on %s, issue 12559 and 12560", runtime.GOARCH)
 	}
 	// TODO(jsing): Reenable once openbsd/arm has external linking support.
 	if runtime.GOOS == "openbsd" && runtime.GOARCH == "arm" {
 		t.Skip("skipping on openbsd/arm, no support for external linking, issue 10619")
+	}
+	if !build.Default.CgoEnabled {
+		t.Skip("skipping because cgo is not enabled")
 	}
 	testDisasm(t, "-ldflags=-linkmode=external")
 }

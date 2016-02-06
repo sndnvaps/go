@@ -148,13 +148,20 @@ func TestQualifiedTypeString(t *testing.T) {
 		this *Package
 		want string
 	}{
+		{nil, nil, "<nil>"},
 		{pT, nil, "p.T"},
 		{pT, p, "T"},
 		{pT, q, "p.T"},
 		{NewPointer(pT), p, "*T"},
 		{NewPointer(pT), q, "*p.T"},
 	} {
-		if got := TypeString(test.this, test.typ); got != test.want {
+		qualifier := func(pkg *Package) string {
+			if pkg != test.this {
+				return pkg.Name()
+			}
+			return ""
+		}
+		if got := TypeString(test.typ, qualifier); got != test.want {
 			t.Errorf("TypeString(%s, %s) = %s, want %s",
 				test.this, test.typ, got, test.want)
 		}

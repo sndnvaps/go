@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strconv"
 	"testing"
 )
 
@@ -22,6 +23,23 @@ func checkGdbPython(t *testing.T) {
 	if string(out) != "go gdb python support\n" {
 		t.Skipf("skipping due to lack of python gdb support: %s", out)
 	}
+
+	// Issue 11214 reports various failures with older versions of gdb.
+	out, err = exec.Command("gdb", "--version").CombinedOutput()
+	re := regexp.MustCompile(`([0-9]+)\.([0-9]+)`)
+	matches := re.FindSubmatch(out)
+	if len(matches) < 3 {
+		t.Skipf("skipping: can't determine gdb version from\n%s\n", out)
+	}
+	major, err1 := strconv.Atoi(string(matches[1]))
+	minor, err2 := strconv.Atoi(string(matches[2]))
+	if err1 != nil || err2 != nil {
+		t.Skipf("skipping: can't determine gdb version: %v, %v", err1, err2)
+	}
+	if major < 7 || (major == 7 && minor < 7) {
+		t.Skipf("skipping: gdb version %d.%d too old", major, minor)
+	}
+	t.Logf("gdb version %d.%d", major, minor)
 }
 
 const helloSource = `
@@ -41,6 +59,9 @@ func main() {
 func TestGdbPython(t *testing.T) {
 	if runtime.GOOS == "darwin" {
 		t.Skip("gdb does not work on darwin")
+	}
+	if final := os.Getenv("GOROOT_FINAL"); final != "" && runtime.GOROOT() != final {
+		t.Skip("gdb test can fail with GOROOT_FINAL pending")
 	}
 
 	checkGdbPython(t)
@@ -66,6 +87,7 @@ func TestGdbPython(t *testing.T) {
 
 	args := []string{"-nx", "-q", "--batch", "-iex",
 		fmt.Sprintf("add-auto-load-safe-path %s/src/runtime", runtime.GOROOT()),
+		"-ex", "info auto-load python-scripts",
 		"-ex", "br main.go:10",
 		"-ex", "run",
 		"-ex", "echo BEGIN info goroutines\n",
@@ -85,7 +107,7 @@ func TestGdbPython(t *testing.T) {
 	// stack frames on RISC architectures.
 	canBackTrace := false
 	switch runtime.GOARCH {
-	case "amd64", "386", "ppc64", "ppc64le", "arm", "arm64":
+	case "amd64", "386", "ppc64", "ppc64le", "arm", "arm64", "mips64", "mips64le":
 		canBackTrace = true
 		args = append(args,
 			"-ex", "echo BEGIN goroutine 2 bt\n",
@@ -98,7 +120,20 @@ func TestGdbPython(t *testing.T) {
 
 	firstLine := bytes.SplitN(got, []byte("\n"), 2)[0]
 	if string(firstLine) != "Loading Go Runtime support." {
-		t.Fatalf("failed to load Go runtime support: %s", firstLine)
+		// This can happen when using all.bash with
+		// GOROOT_FINAL set, because the tests are run before
+		// the final installation of the files.
+		cmd := exec.Command("go", "env", "GOROOT")
+		cmd.Env = []string{}
+		out, err := cmd.CombinedOutput()
+		if err != nil && bytes.Contains(out, []byte("cannot find GOROOT")) {
+			t.Skipf("skipping because GOROOT=%s does not exist", runtime.GOROOT())
+		}
+
+		_, file, _, _ := runtime.Caller(1)
+
+		t.Logf("package testing source file: %s", file)
+		t.Fatalf("failed to load Go runtime support: %s\n%s", firstLine, got)
 	}
 
 	// Extract named BEGIN...END blocks from output

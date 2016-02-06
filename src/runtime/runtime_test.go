@@ -12,6 +12,13 @@ import (
 	"unsafe"
 )
 
+func init() {
+	// We're testing the runtime, so make tracebacks show things
+	// in the runtime. This only raises the level, so it won't
+	// override GOTRACEBACK=crash from the user.
+	SetTracebackEnv("system")
+}
+
 var errf error
 
 func errfn() error {
@@ -259,5 +266,66 @@ func TestBadOpen(t *testing.T) {
 	c := Close(-1)
 	if c != -1 {
 		t.Errorf("close()=%d, want -1", c)
+	}
+}
+
+func TestAppendGrowth(t *testing.T) {
+	var x []int64
+	check := func(want int) {
+		if cap(x) != want {
+			t.Errorf("len=%d, cap=%d, want cap=%d", len(x), cap(x), want)
+		}
+	}
+
+	check(0)
+	want := 1
+	for i := 1; i <= 100; i++ {
+		x = append(x, 1)
+		check(want)
+		if i&(i-1) == 0 {
+			want = 2 * i
+		}
+	}
+}
+
+var One = []int64{1}
+
+func TestAppendSliceGrowth(t *testing.T) {
+	var x []int64
+	check := func(want int) {
+		if cap(x) != want {
+			t.Errorf("len=%d, cap=%d, want cap=%d", len(x), cap(x), want)
+		}
+	}
+
+	check(0)
+	want := 1
+	for i := 1; i <= 100; i++ {
+		x = append(x, One...)
+		check(want)
+		if i&(i-1) == 0 {
+			want = 2 * i
+		}
+	}
+}
+
+func TestGoroutineProfileTrivial(t *testing.T) {
+	// Calling GoroutineProfile twice in a row should find the same number of goroutines,
+	// but it's possible there are goroutines just about to exit, so we might end up
+	// with fewer in the second call. Try a few times; it should converge once those
+	// zombies are gone.
+	for i := 0; ; i++ {
+		n1, ok := GoroutineProfile(nil) // should fail, there's at least 1 goroutine
+		if n1 < 1 || ok {
+			t.Fatalf("GoroutineProfile(nil) = %d, %v, want >0, false", n1, ok)
+		}
+		n2, ok := GoroutineProfile(make([]StackRecord, n1))
+		if n2 == n1 && ok {
+			break
+		}
+		t.Logf("GoroutineProfile(%d) = %d, %v, want %d, true", n1, n2, ok, n1)
+		if i >= 10 {
+			t.Fatalf("GoroutineProfile not converging")
+		}
 	}
 }

@@ -8,6 +8,8 @@ import (
 	"cmd/internal/obj"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 )
 
 // funcpctab writes to dst a pc-value table mapping the code in func to the values
@@ -122,10 +124,12 @@ func addvarint(d *Pcdata, val uint32) {
 }
 
 func addpctab(ftab *LSym, off int32, d *Pcdata) int32 {
-	start := int32(len(ftab.P))
-	Symgrow(Ctxt, ftab, int64(start)+int64(len(d.P)))
-	copy(ftab.P[start:], d.P)
-
+	var start int32
+	if len(d.P) > 0 {
+		start = int32(len(ftab.P))
+		Symgrow(Ctxt, ftab, int64(start)+int64(len(d.P)))
+		copy(ftab.P[start:], d.P)
+	}
 	return int32(setuint32(Ctxt, ftab, int64(off), uint32(start)))
 }
 
@@ -148,6 +152,7 @@ func renumberfiles(ctxt *Link, files []*LSym, d *Pcdata) {
 			f.Value = int64(ctxt.Nhistfile)
 			f.Type = obj.SFILEPATH
 			f.Next = ctxt.Filesyms
+			f.Name = expandGoroot(f.Name)
 			ctxt.Filesyms = f
 		}
 	}
@@ -191,7 +196,7 @@ func renumberfiles(ctxt *Link, files []*LSym, d *Pcdata) {
 func container(s *LSym) int {
 	// We want to generate func table entries only for the "lowest level" symbols,
 	// not containers of subsymbols.
-	if s != nil && s.Sub != nil {
+	if s != nil && s.Type&obj.SCONTAINER != 0 {
 		return 1
 	}
 	return 0
@@ -222,6 +227,13 @@ func pclntab() {
 	//	end PC [thearch.ptrsize bytes]
 	//	offset to file table [4 bytes]
 	nfunc := int32(0)
+
+	// Find container symbols, mark them with SCONTAINER
+	for Ctxt.Cursym = Ctxt.Textp; Ctxt.Cursym != nil; Ctxt.Cursym = Ctxt.Cursym.Next {
+		if Ctxt.Cursym.Outer != nil {
+			Ctxt.Cursym.Outer.Type |= obj.SCONTAINER
+		}
+	}
 
 	for Ctxt.Cursym = Ctxt.Textp; Ctxt.Cursym != nil; Ctxt.Cursym = Ctxt.Cursym.Next {
 		if container(Ctxt.Cursym) == 0 {
@@ -365,6 +377,18 @@ func pclntab() {
 	if Debug['v'] != 0 {
 		fmt.Fprintf(&Bso, "%5.2f pclntab=%d bytes, funcdata total %d bytes\n", obj.Cputime(), int64(ftab.Size), int64(funcdata_bytes))
 	}
+}
+
+func expandGoroot(s string) string {
+	const n = len("$GOROOT")
+	if len(s) >= n+1 && s[:n] == "$GOROOT" && (s[n] == '/' || s[n] == '\\') {
+		root := goroot
+		if final := os.Getenv("GOROOT_FINAL"); final != "" {
+			root = final
+		}
+		return filepath.ToSlash(filepath.Join(root, s[n:]))
+	}
+	return s
 }
 
 const (

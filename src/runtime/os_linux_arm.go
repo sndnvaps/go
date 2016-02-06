@@ -4,7 +4,10 @@
 
 package runtime
 
-import "unsafe"
+import (
+	"runtime/internal/sys"
+	"unsafe"
+)
 
 const (
 	_AT_NULL     = 0
@@ -19,7 +22,6 @@ const (
 var randomNumber uint32
 var armArch uint8 = 6 // we default to ARMv6
 var hwcap uint32      // set by setup_auxv
-var goarm uint8       // set by 5l
 
 func checkgoarm() {
 	if goarm > 5 && hwcap&_HWCAP_VFP == 0 {
@@ -41,7 +43,7 @@ func sysargs(argc int32, argv **byte) {
 		n++
 	}
 	n++
-	auxv := (*[1 << 28]uint32)(add(unsafe.Pointer(argv), uintptr(n)*ptrSize))
+	auxv := (*[1 << 28]uint32)(add(unsafe.Pointer(argv), uintptr(n)*sys.PtrSize))
 
 	for i := 0; auxv[i] != _AT_NULL; i += 2 {
 		switch auxv[i] {

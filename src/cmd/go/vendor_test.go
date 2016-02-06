@@ -9,6 +9,7 @@ package main_test
 import (
 	"bytes"
 	"fmt"
+	"internal/testenv"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -23,12 +24,15 @@ func TestVendorImports(t *testing.T) {
 	tg.run("list", "-f", "{{.ImportPath}} {{.Imports}}", "vend/...")
 	want := `
 		vend [vend/vendor/p r]
+		vend/dir1 []
 		vend/hello [fmt vend/vendor/strings]
 		vend/subdir [vend/vendor/p r]
 		vend/vendor/p []
 		vend/vendor/q []
 		vend/vendor/strings []
-		vend/x [vend/x/vendor/p vend/vendor/q vend/x/vendor/r]
+		vend/vendor/vend/dir1/dir2 []
+		vend/x [vend/x/vendor/p vend/vendor/q vend/x/vendor/r vend/dir1 vend/vendor/vend/dir1/dir2]
+		vend/x/invalid [vend/x/invalid/vendor/foo]
 		vend/x/vendor/p []
 		vend/x/vendor/p/p [notfound]
 		vend/x/vendor/r []
@@ -43,12 +47,36 @@ func TestVendorImports(t *testing.T) {
 	}
 }
 
+func TestVendorBuild(t *testing.T) {
+	tg := testgo(t)
+	defer tg.cleanup()
+	tg.setenv("GOPATH", filepath.Join(tg.pwd(), "testdata"))
+	tg.setenv("GO15VENDOREXPERIMENT", "1")
+	tg.run("build", "vend/x")
+}
+
 func TestVendorRun(t *testing.T) {
 	tg := testgo(t)
 	defer tg.cleanup()
 	tg.setenv("GOPATH", filepath.Join(tg.pwd(), "testdata"))
 	tg.setenv("GO15VENDOREXPERIMENT", "1")
 	tg.cd(filepath.Join(tg.pwd(), "testdata/src/vend/hello"))
+	tg.run("run", "hello.go")
+	tg.grepStdout("hello, world", "missing hello world output")
+}
+
+func TestVendorGOPATH(t *testing.T) {
+	tg := testgo(t)
+	defer tg.cleanup()
+	changeVolume := func(s string, f func(s string) string) string {
+		vol := filepath.VolumeName(s)
+		return f(vol) + s[len(vol):]
+	}
+	gopath := changeVolume(filepath.Join(tg.pwd(), "testdata"), strings.ToLower)
+	tg.setenv("GOPATH", gopath)
+	tg.setenv("GO15VENDOREXPERIMENT", "1")
+	cd := changeVolume(filepath.Join(tg.pwd(), "testdata/src/vend/hello"), strings.ToUpper)
+	tg.cd(cd)
 	tg.run("run", "hello.go")
 	tg.grepStdout("hello, world", "missing hello world output")
 }
@@ -64,6 +92,16 @@ func TestVendorTest(t *testing.T) {
 	tg.grepStdout("TestMsgExternal", "missing use in external test")
 }
 
+func TestVendorInvalid(t *testing.T) {
+	tg := testgo(t)
+	defer tg.cleanup()
+	tg.setenv("GOPATH", filepath.Join(tg.pwd(), "testdata"))
+	tg.setenv("GO15VENDOREXPERIMENT", "1")
+
+	tg.runFail("build", "vend/x/invalid")
+	tg.grepStderr("must be imported as foo", "missing vendor import error")
+}
+
 func TestVendorImportError(t *testing.T) {
 	tg := testgo(t)
 	defer tg.cleanup()
@@ -74,7 +112,7 @@ func TestVendorImportError(t *testing.T) {
 
 	re := regexp.MustCompile(`cannot find package "notfound" in any of:
 	.*[\\/]testdata[\\/]src[\\/]vend[\\/]x[\\/]vendor[\\/]notfound \(vendor tree\)
-	.*[\\/]testdata[\\/]src[\\/]vend[\\/]vendor[\\/]notfound \(vendor tree\)
+	.*[\\/]testdata[\\/]src[\\/]vend[\\/]vendor[\\/]notfound
 	.*[\\/]src[\\/]notfound \(from \$GOROOT\)
 	.*[\\/]testdata[\\/]src[\\/]notfound \(from \$GOPATH\)`)
 
@@ -114,4 +152,129 @@ func splitLines(s string) []string {
 		x = x[:len(x)-1]
 	}
 	return x
+}
+
+func TestVendorGet(t *testing.T) {
+	tg := testgo(t)
+	defer tg.cleanup()
+	tg.tempFile("src/v/m.go", `
+		package main
+		import ("fmt"; "vendor.org/p")
+		func main() {
+			fmt.Println(p.C)
+		}`)
+	tg.tempFile("src/v/m_test.go", `
+		package main
+		import ("fmt"; "testing"; "vendor.org/p")
+		func TestNothing(t *testing.T) {
+			fmt.Println(p.C)
+		}`)
+	tg.tempFile("src/v/vendor/vendor.org/p/p.go", `
+		package p
+		const C = 1`)
+	tg.setenv("GOPATH", tg.path("."))
+	tg.setenv("GO15VENDOREXPERIMENT", "1")
+	tg.cd(tg.path("src/v"))
+	tg.run("run", "m.go")
+	tg.run("test")
+	tg.run("list", "-f", "{{.Imports}}")
+	tg.grepStdout("v/vendor/vendor.org/p", "import not in vendor directory")
+	tg.run("list", "-f", "{{.TestImports}}")
+	tg.grepStdout("v/vendor/vendor.org/p", "test import not in vendor directory")
+	tg.run("get")
+	tg.run("get", "-t")
+}
+
+func TestVendorGetUpdate(t *testing.T) {
+	testenv.MustHaveExternalNetwork(t)
+
+	tg := testgo(t)
+	defer tg.cleanup()
+	tg.makeTempdir()
+	tg.setenv("GOPATH", tg.path("."))
+	tg.setenv("GO15VENDOREXPERIMENT", "1")
+	tg.run("get", "github.com/rsc/go-get-issue-11864")
+	tg.run("get", "-u", "github.com/rsc/go-get-issue-11864")
+}
+
+func TestGetSubmodules(t *testing.T) {
+	testenv.MustHaveExternalNetwork(t)
+
+	tg := testgo(t)
+	defer tg.cleanup()
+	tg.makeTempdir()
+	tg.setenv("GOPATH", tg.path("."))
+	tg.setenv("GO15VENDOREXPERIMENT", "1")
+	tg.run("get", "-d", "github.com/rsc/go-get-issue-12612")
+	tg.run("get", "-u", "-d", "github.com/rsc/go-get-issue-12612")
+}
+
+func TestVendorCache(t *testing.T) {
+	tg := testgo(t)
+	defer tg.cleanup()
+	tg.setenv("GOPATH", filepath.Join(tg.pwd(), "testdata/testvendor"))
+	tg.setenv("GO15VENDOREXPERIMENT", "1")
+	tg.runFail("build", "p")
+	tg.grepStderr("must be imported as x", "did not fail to build p")
+}
+
+func TestVendorTest2(t *testing.T) {
+	testenv.MustHaveExternalNetwork(t)
+
+	tg := testgo(t)
+	defer tg.cleanup()
+	tg.makeTempdir()
+	tg.setenv("GOPATH", tg.path("."))
+	tg.setenv("GO15VENDOREXPERIMENT", "1")
+	tg.run("get", "github.com/rsc/go-get-issue-11864")
+
+	// build -i should work
+	tg.run("build", "-i", "github.com/rsc/go-get-issue-11864")
+	tg.run("build", "-i", "github.com/rsc/go-get-issue-11864/t")
+
+	// test -i should work like build -i (golang.org/issue/11988)
+	tg.run("test", "-i", "github.com/rsc/go-get-issue-11864")
+	tg.run("test", "-i", "github.com/rsc/go-get-issue-11864/t")
+
+	// test should work too
+	tg.run("test", "github.com/rsc/go-get-issue-11864")
+	tg.run("test", "github.com/rsc/go-get-issue-11864/t")
+
+	// external tests should observe internal test exports (golang.org/issue/11977)
+	tg.run("test", "github.com/rsc/go-get-issue-11864/vendor/vendor.org/tx2")
+}
+
+func TestVendorList(t *testing.T) {
+	testenv.MustHaveExternalNetwork(t)
+
+	tg := testgo(t)
+	defer tg.cleanup()
+	tg.makeTempdir()
+	tg.setenv("GOPATH", tg.path("."))
+	tg.setenv("GO15VENDOREXPERIMENT", "1")
+	tg.run("get", "github.com/rsc/go-get-issue-11864")
+
+	tg.run("list", "-f", `{{join .TestImports "\n"}}`, "github.com/rsc/go-get-issue-11864/t")
+	tg.grepStdout("go-get-issue-11864/vendor/vendor.org/p", "did not find vendor-expanded p")
+
+	tg.run("list", "-f", `{{join .XTestImports "\n"}}`, "github.com/rsc/go-get-issue-11864/tx")
+	tg.grepStdout("go-get-issue-11864/vendor/vendor.org/p", "did not find vendor-expanded p")
+
+	tg.run("list", "-f", `{{join .XTestImports "\n"}}`, "github.com/rsc/go-get-issue-11864/vendor/vendor.org/tx2")
+	tg.grepStdout("go-get-issue-11864/vendor/vendor.org/tx2", "did not find vendor-expanded tx2")
+
+	tg.run("list", "-f", `{{join .XTestImports "\n"}}`, "github.com/rsc/go-get-issue-11864/vendor/vendor.org/tx3")
+	tg.grepStdout("go-get-issue-11864/vendor/vendor.org/tx3", "did not find vendor-expanded tx3")
+}
+
+func TestVendor12156(t *testing.T) {
+	// Former index out of range panic.
+	tg := testgo(t)
+	defer tg.cleanup()
+	tg.setenv("GOPATH", filepath.Join(tg.pwd(), "testdata/testvendor2"))
+	tg.setenv("GO15VENDOREXPERIMENT", "1")
+	tg.cd(filepath.Join(tg.pwd(), "testdata/testvendor2/src/p"))
+	tg.runFail("build", "p.go")
+	tg.grepStderrNot("panic", "panicked")
+	tg.grepStderr(`cannot find package "x"`, "wrong error")
 }

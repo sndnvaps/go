@@ -36,6 +36,9 @@ func (pkg *Package) Path() string { return pkg.path }
 // Name returns the package name.
 func (pkg *Package) Name() string { return pkg.name }
 
+// SetName sets the package name.
+func (pkg *Package) SetName(name string) { pkg.name = name }
+
 // Scope returns the (complete or incomplete) package scope
 // holding the objects declared at package level (TypeNames,
 // Consts, Vars, and Funcs).
@@ -48,8 +51,12 @@ func (pkg *Package) Complete() bool { return pkg.complete }
 // MarkComplete marks a package as complete.
 func (pkg *Package) MarkComplete() { pkg.complete = true }
 
-// Imports returns the list of packages explicitly imported by
+// Imports returns the list of packages directly imported by
 // pkg; the list is in source order. Package unsafe is excluded.
+//
+// If pkg was loaded from export data, Imports includes packages that
+// provide package-level objects referenced by pkg.  This may be more or
+// less than the set of packages directly imported by pkg's source code.
 func (pkg *Package) Imports() []*Package { return pkg.imports }
 
 // SetImports sets the list of explicitly imported packages to list.

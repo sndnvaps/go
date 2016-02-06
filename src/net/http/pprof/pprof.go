@@ -43,7 +43,7 @@
 //
 // For a study of the facility in action, visit
 //
-//	http://blog.golang.org/2011/06/profiling-go-programs.html
+//	https://blog.golang.org/2011/06/profiling-go-programs.html
 //
 package pprof
 
@@ -58,6 +58,7 @@ import (
 	"os"
 	"runtime"
 	"runtime/pprof"
+	"runtime/trace"
 	"strconv"
 	"strings"
 	"time"
@@ -77,6 +78,17 @@ func init() {
 func Cmdline(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	fmt.Fprintf(w, strings.Join(os.Args, "\x00"))
+}
+
+func sleep(w http.ResponseWriter, d time.Duration) {
+	var clientGone <-chan bool
+	if cn, ok := w.(http.CloseNotifier); ok {
+		clientGone = cn.CloseNotify()
+	}
+	select {
+	case <-time.After(d):
+	case <-clientGone:
+	}
 }
 
 // Profile responds with the pprof-formatted cpu profile.
@@ -99,7 +111,7 @@ func Profile(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "Could not enable CPU profiling: %s\n", err)
 		return
 	}
-	time.Sleep(time.Duration(sec) * time.Second)
+	sleep(w, time.Duration(sec)*time.Second)
 	pprof.StopCPUProfile()
 }
 
@@ -112,19 +124,19 @@ func Trace(w http.ResponseWriter, r *http.Request) {
 		sec = 1
 	}
 
-	// Set Content Type assuming StartTrace will work,
+	// Set Content Type assuming trace.Start will work,
 	// because if it does it starts writing.
 	w.Header().Set("Content-Type", "application/octet-stream")
-	if err := pprof.StartTrace(w); err != nil {
-		// StartTrace failed, so no writes yet.
+	if err := trace.Start(w); err != nil {
+		// trace.Start failed, so no writes yet.
 		// Can change header back to text content and send error code.
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(http.StatusInternalServerError)
 		fmt.Fprintf(w, "Could not enable tracing: %s\n", err)
 		return
 	}
-	time.Sleep(time.Duration(sec) * time.Second)
-	pprof.StopTrace()
+	sleep(w, time.Duration(sec)*time.Second)
+	trace.Stop()
 }
 
 // Symbol looks up the program counters listed in the request,

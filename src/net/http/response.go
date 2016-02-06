@@ -72,8 +72,18 @@ type Response struct {
 	// ReadResponse nor Response.Write ever closes a connection.
 	Close bool
 
-	// Trailer maps trailer keys to values, in the same
-	// format as the header.
+	// Trailer maps trailer keys to values in the same
+	// format as Header.
+	//
+	// The Trailer initially contains only nil values, one for
+	// each key specified in the server's "Trailer" header
+	// value. Those values are not added to Header.
+	//
+	// Trailer must not be accessed concurrently with Read calls
+	// on the Body.
+	//
+	// After Body.Read has returned io.EOF, Trailer will contain
+	// any trailer values sent by the server.
 	Trailer Header
 
 	// The Request that was sent to obtain this Response.
@@ -93,6 +103,8 @@ func (r *Response) Cookies() []*Cookie {
 	return readSetCookies(r.Header)
 }
 
+// ErrNoLocation is returned by Response's Location method
+// when no Location header is present.
 var ErrNoLocation = errors.New("http: no Location header in response")
 
 // Location returns the URL of the response's "Location" header,
@@ -138,12 +150,14 @@ func ReadResponse(r *bufio.Reader, req *Request) (*Response, error) {
 	if len(f) > 2 {
 		reasonPhrase = f[2]
 	}
-	resp.Status = f[1] + " " + reasonPhrase
-	resp.StatusCode, err = strconv.Atoi(f[1])
-	if err != nil {
+	if len(f[1]) != 3 {
 		return nil, &badStringError{"malformed HTTP status code", f[1]}
 	}
-
+	resp.StatusCode, err = strconv.Atoi(f[1])
+	if err != nil || resp.StatusCode < 0 {
+		return nil, &badStringError{"malformed HTTP status code", f[1]}
+	}
+	resp.Status = f[1] + " " + reasonPhrase
 	resp.Proto = f[0]
 	var ok bool
 	if resp.ProtoMajor, resp.ProtoMinor, ok = ParseHTTPVersion(resp.Proto); !ok {

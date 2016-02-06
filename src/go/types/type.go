@@ -4,9 +4,10 @@
 
 package types
 
-import "sort"
-
-// TODO(gri) Revisit factory functions - make sure they have all relevant parameters.
+import (
+	"sort"
+	"sync"
+)
 
 // A Type represents a type of Go.
 // All types implement the Type interface.
@@ -120,10 +121,10 @@ func (s *Slice) Elem() Type { return s.elem }
 
 // A Struct represents a struct type.
 type Struct struct {
-	fields []*Var
-	tags   []string // field tags; nil if there are no tags
-	// TODO(gri) access to offsets is not threadsafe - fix this
-	offsets []int64 // field offsets in bytes, lazily initialized
+	fields      []*Var
+	tags        []string  // field tags; nil if there are no tags
+	offsets     []int64   // field offsets in bytes, lazily initialized
+	offsetsOnce sync.Once // for threadsafe lazy initialization of offsets
 }
 
 // NewStruct returns a new struct with the given fields and corresponding field tags.
@@ -360,7 +361,7 @@ type Chan struct {
 // A ChanDir value indicates a channel direction.
 type ChanDir int
 
-// The direction of a channel is indicated by one of the following constants.
+// The direction of a channel is indicated by one of these constants.
 const (
 	SendRecv ChanDir = iota
 	SendOnly
@@ -441,14 +442,14 @@ func (t *Map) Underlying() Type       { return t }
 func (t *Chan) Underlying() Type      { return t }
 func (t *Named) Underlying() Type     { return t.underlying }
 
-func (t *Basic) String() string     { return TypeString(nil, t) }
-func (t *Array) String() string     { return TypeString(nil, t) }
-func (t *Slice) String() string     { return TypeString(nil, t) }
-func (t *Struct) String() string    { return TypeString(nil, t) }
-func (t *Pointer) String() string   { return TypeString(nil, t) }
-func (t *Tuple) String() string     { return TypeString(nil, t) }
-func (t *Signature) String() string { return TypeString(nil, t) }
-func (t *Interface) String() string { return TypeString(nil, t) }
-func (t *Map) String() string       { return TypeString(nil, t) }
-func (t *Chan) String() string      { return TypeString(nil, t) }
-func (t *Named) String() string     { return TypeString(nil, t) }
+func (t *Basic) String() string     { return TypeString(t, nil) }
+func (t *Array) String() string     { return TypeString(t, nil) }
+func (t *Slice) String() string     { return TypeString(t, nil) }
+func (t *Struct) String() string    { return TypeString(t, nil) }
+func (t *Pointer) String() string   { return TypeString(t, nil) }
+func (t *Tuple) String() string     { return TypeString(t, nil) }
+func (t *Signature) String() string { return TypeString(t, nil) }
+func (t *Interface) String() string { return TypeString(t, nil) }
+func (t *Map) String() string       { return TypeString(t, nil) }
+func (t *Chan) String() string      { return TypeString(t, nil) }
+func (t *Named) String() string     { return TypeString(t, nil) }
